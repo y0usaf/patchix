@@ -93,8 +93,8 @@ pub fn merge(existing: Value, patch: Value, config: &MergeConfig, path: &str) ->
             }
         }
 
-        // Patch is null at top level: return null (shouldn't happen in practice)
-        (_, Value::Null) => Value::Null,
+        // Patch is null at top level: treat as no-op (key deletion is handled in the object branch)
+        (existing, Value::Null) => existing,
 
         // Scalar conflict: clobber decides
         (existing, patch) => {
@@ -250,6 +250,13 @@ mod tests {
         let patch = json!({"val": {"nested": true}});
         let result = merge(existing, patch, &default_config(), "");
         assert_eq!(result, json!({"val": {"nested": true}}));
+    }
+
+    #[test]
+    fn top_level_null_patch_is_noop() {
+        let existing = json!({"a": 1});
+        let result = merge(existing.clone(), Value::Null, &default_config(), "");
+        assert_eq!(result, existing);
     }
 
     #[test]

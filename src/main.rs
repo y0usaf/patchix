@@ -162,7 +162,12 @@ fn main() -> Result<()> {
                         .with_context(|| format!("creating directory {}", parent.display()))?;
                 }
             }
-            let tmp_path = output_path.with_extension("patchix-tmp");
+            let tmp_name = format!(
+                "{}.{}.patchix-tmp",
+                output_path.file_name().unwrap_or_default().to_string_lossy(),
+                std::process::id()
+            );
+            let tmp_path = output_path.with_file_name(tmp_name);
             std::fs::write(&tmp_path, &result)
                 .with_context(|| format!("writing {}", tmp_path.display()))?;
             std::fs::rename(&tmp_path, output_path)
