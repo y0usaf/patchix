@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod formats;
 mod merge;
@@ -10,7 +10,7 @@ use formats::Format;
 use merge::{ArrayStrategy, MergeConfig};
 
 #[derive(Parser)]
-#[command(name = "patchix", about = "Declarative config file patcher for Nix")]
+#[command(name = "patchix", about = "Declarative config file patcher for Nix", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -91,7 +91,7 @@ fn parse_path_strategy(s: &str) -> Result<(String, ArrayStrategy), String> {
     Ok((path.to_string(), strategy))
 }
 
-fn detect_format(path: &PathBuf) -> Result<Format> {
+fn detect_format(path: &Path) -> Result<Format> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("json" | "jsonc") => Ok(Format::Json),
         Some("toml") => Ok(Format::Toml),
@@ -156,6 +156,12 @@ fn main() -> Result<()> {
 
             // Atomic write: write to temp file then rename
             let output_path = output.as_ref().unwrap_or(&existing);
+            if let Some(parent) = output_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating directory {}", parent.display()))?;
+                }
+            }
             let tmp_path = output_path.with_extension("patchix-tmp");
             std::fs::write(&tmp_path, &result)
                 .with_context(|| format!("writing {}", tmp_path.display()))?;

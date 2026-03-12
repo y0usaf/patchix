@@ -66,6 +66,16 @@ flake: {
     };
   };
 
+  # Generate INI content from a nested attrset:
+  # { "__global__" = { key = val; }; section = { key = val; }; }
+  mkIniContent = attrs:
+    lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (section: props: let
+        header = if section == "__global__" then "" else "[${section}]\n";
+        lines = lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "${k} = ${toString v}") props);
+      in "${header}${lines}") attrs
+    ) + "\n";
+
   # Generate the patch file in the Nix store
   mkPatchFile = name: patchCfg: let
     ext = formatExtension.${patchCfg.format};
@@ -76,7 +86,7 @@ flake: {
       then (pkgs.formats.toml {}).generate "patch-${name}" patchCfg.value
       else if patchCfg.format == "yaml"
       then (pkgs.formats.yaml {}).generate "patch-${name}" patchCfg.value
-      else builtins.toJSON patchCfg.value;
+      else mkIniContent patchCfg.value;
   in
     if builtins.isString content
     then pkgs.writeText "patchix-${name}.${ext}" content
@@ -87,7 +97,7 @@ flake: {
     patchFile = mkPatchFile target patchCfg;
     fullTarget = "${homeDir}/${target}";
     strategyArgs = lib.concatMapStringsSep " "
-      (path: "--array-strategy '${path}=${patchCfg.arrayStrategies.${path}}'")
+      (path: "--array-strategy ${lib.escapeShellArg "${path}=${patchCfg.arrayStrategies.${path}}"}")
       (builtins.attrNames patchCfg.arrayStrategies);
   in ''
     ${lib.getExe patchixPkg} merge \
