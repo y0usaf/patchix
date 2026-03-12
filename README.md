@@ -1,10 +1,8 @@
 # patchix
 
-Nix is great at declaring config files. It's bad at letting apps edit them.
+Merge declarative Nix patches into mutable config files at activation time.
 
-patchix sits in the middle: you declare the keys you care about in Nix, and patchix merges them into the actual file on disk at activation time. The app can still write whatever it wants — your declared keys get enforced on the next rebuild, everything else is left alone.
-
-## Quick start
+## Setup
 
 ```nix
 # flake.nix
@@ -20,13 +18,12 @@ inputs.patchix.inputs.nixpkgs.follows = "nixpkgs";
   patchix.enable = true;
   patchix.users.alice.patches = {
 
-    # These values always win on rebuild
     ".config/starship.toml" = {
       format = "toml";
       value.character.success_symbol = "[>](bold green)";
     };
 
-    # These values are defaults — if the app changed them, it sticks
+    # clobber = false: only write keys not already present on disk
     ".config/Code/User/settings.json" = {
       format = "json";
       clobber = false;
@@ -39,20 +36,24 @@ inputs.patchix.inputs.nixpkgs.follows = "nixpkgs";
 }
 ```
 
-That's it. Each user gets a systemd oneshot that runs `patchix merge` per file.
+Each user gets a systemd oneshot that runs `patchix merge` per file on activation.
 
-## `clobber`
+## Options
 
-The interesting bit.
+`patchix.users.<name>.patches.<path>`:
 
-- **`clobber = true`** (default) — your Nix values overwrite whatever's on disk. Authoritative.
-- **`clobber = false`** — your Nix values only fill in keys that don't exist yet. If the app (or user) changed a value at runtime, it's preserved.
+| Option | Default | |
+|--------|---------|---|
+| `format` | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"` |
+| `value` | `{}` | Patch content as Nix attrset |
+| `clobber` | `true` | `true`: overwrite existing values. `false`: only fill in missing keys |
+| `defaultArrayStrategy` | `"replace"` | `"replace"` `"append"` `"prepend"` `"union"` |
+| `arrayStrategies` | `{}` | Per-path overrides (dot-separated) |
+| `enable` | `true` | Toggle this patch |
 
-Both modes recurse into nested objects, so you can declare defaults deep in a config tree and they'll fill in without flattening anything above them.
+Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC 7386).
 
-## Arrays
-
-When `clobber = true`, arrays use a configurable strategy:
+### Array strategies (when `clobber = true`)
 
 | Strategy | `[a, b]` + `[c]` |
 |----------|-------------------|
@@ -61,45 +62,22 @@ When `clobber = true`, arrays use a configurable strategy:
 | `prepend` | `[c, a, b]` |
 | `union` | `[a, b, c]` (deduplicated) |
 
-Set globally with `defaultArrayStrategy` or per-path:
-
-```nix
-arrayStrategies."editor.formatters" = "append";
-```
-
-When `clobber = false`, existing arrays are left alone.
-
-## Key deletion
-
-`null` in the patch deletes the key (per RFC 7386).
+Per-path: `arrayStrategies."editor.formatters" = "append";`
 
 ## Formats
 
-JSON, TOML, YAML, INI. Auto-detected from file extension, or set explicitly with `format`.
+Auto-detected from file extension. Supported: `json`/`jsonc`, `toml`, `yaml`/`yml`, `ini`/`conf`/`cfg`.
 
 TOML datetimes round-trip as strings. INI sections become top-level keys; sectionless keys go under `__global__`.
 
 ## CLI
 
 ```sh
-patchix merge -e config.json -p patch.json                    # basic
-patchix merge -e config.json -p patch.json --no-clobber       # defaults only
+patchix merge -e config.json -p patch.json
+patchix merge -e config.json -p patch.json --no-clobber
 patchix merge -e config.json -p patch.json --array-strategy 'plugins=append'
-patchix merge -e config.toml -p patch.toml -o merged.toml     # explicit output
+patchix merge -e config.toml -p patch.toml -o merged.toml
 ```
-
-## Module options
-
-`patchix.users.<name>.patches.<path>`:
-
-| Option | Default | |
-|--------|---------|---|
-| `format` | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"` |
-| `value` | `{}` | Patch content as Nix attrset |
-| `clobber` | `true` | Overwrite existing values |
-| `defaultArrayStrategy` | `"replace"` | `"replace"` `"append"` `"prepend"` `"union"` |
-| `arrayStrategies` | `{}` | Per-path overrides (dot-separated) |
-| `enable` | `true` | Toggle this patch |
 
 ## License
 
