@@ -1,0 +1,157 @@
+flake: {
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.patchix;
+  patchixPkg = flake.packages.${pkgs.stdenv.hostPlatform.system}.default;
+
+  formatExtension = {
+    json = "json";
+    toml = "toml";
+    yaml = "yaml";
+    ini = "ini";
+  };
+
+  patchFileModule = {name, ...}: {
+    options = {
+      enable = lib.mkEnableOption "this patch" // {default = true;};
+
+      clobber = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether to overwrite existing values.
+          When false, only missing keys are filled in — runtime changes are preserved.
+        '';
+      };
+
+      format = lib.mkOption {
+        type = lib.types.enum ["json" "toml" "yaml" "ini"];
+        description = "Config file format.";
+      };
+
+      value = lib.mkOption {
+        type = lib.types.attrs;
+        default = {};
+        description = "Patch content as a Nix attribute set. Deep-merged into the existing file.";
+      };
+
+      defaultArrayStrategy = lib.mkOption {
+        type = lib.types.enum ["replace" "append" "prepend" "union"];
+        default = "replace";
+        description = "Default strategy for merging arrays.";
+      };
+
+      arrayStrategies = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.enum ["replace" "append" "prepend" "union"]);
+        default = {};
+        description = "Per-path array merge strategy overrides. Keys are dot-separated paths.";
+        example = {
+          "plugins" = "append";
+          "editor.formatters" = "union";
+        };
+      };
+    };
+  };
+
+  userModule = {name, ...}: {
+    options = {
+      patches = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.submodule patchFileModule);
+        default = {};
+        description = "Config files to patch. Keys are target paths relative to the user's home directory.";
+      };
+    };
+  };
+
+  # Generate the patch file in the Nix store
+  mkPatchFile = name: patchCfg: let
+    ext = formatExtension.${patchCfg.format};
+    content =
+      if patchCfg.format == "json"
+      then builtins.toJSON patchCfg.value
+      else if patchCfg.format == "toml"
+      then (pkgs.formats.toml {}).generate "patch-${name}" patchCfg.value
+      else if patchCfg.format == "yaml"
+      then (pkgs.formats.yaml {}).generate "patch-${name}" patchCfg.value
+      else builtins.toJSON patchCfg.value;
+  in
+    if builtins.isString content
+    then pkgs.writeText "patchix-${name}.${ext}" content
+    else content;
+
+  # Generate a patchix CLI invocation for a single patch
+  mkPatchCommand = homeDir: target: patchCfg: let
+    patchFile = mkPatchFile target patchCfg;
+    fullTarget = "${homeDir}/${target}";
+    strategyArgs = lib.concatMapStringsSep " "
+      (path: "--array-strategy '${path}=${patchCfg.arrayStrategies.${path}}'")
+      (builtins.attrNames patchCfg.arrayStrategies);
+  in ''
+    ${lib.getExe patchixPkg} merge \
+      --existing "${fullTarget}" \
+      --patch "${patchFile}" \
+      --format ${patchCfg.format} \
+      --default-array ${patchCfg.defaultArrayStrategy} \
+      ${lib.optionalString (!patchCfg.clobber) "--no-clobber"} \
+      ${strategyArgs}
+  '';
+
+  # Generate the full activation script for a user
+  mkUserScript = username: userCfg: let
+    enabledPatches = lib.filterAttrs (_: p: p.enable) userCfg.patches;
+    homeDir = config.users.users.${username}.home;
+  in
+    pkgs.writeShellScript "patchix-activate-${username}" (
+      lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (mkPatchCommand homeDir) enabledPatches
+      )
+    );
+
+  enabledUsers = lib.filterAttrs (_: u: u.patches != {}) cfg.users;
+in {
+  options.patchix = {
+    enable = lib.mkEnableOption "patchix declarative config patching";
+
+    users = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule userModule);
+      default = {};
+      description = "Per-user config file patches.";
+      example = lib.literalExpression ''
+        {
+          y0usaf.patches = {
+            ".config/Code/User/settings.json" = {
+              format = "json";
+              value = {
+                "editor.fontSize" = 14;
+                "workbench.colorTheme" = "One Dark Pro";
+              };
+            };
+          };
+        }
+      '';
+    };
+  };
+
+  config = lib.mkIf (cfg.enable && enabledUsers != {}) {
+    # Add patchix to system packages so it's available
+    environment.systemPackages = [patchixPkg];
+
+    # Per-user systemd oneshot services
+    systemd.services = lib.mapAttrs' (username: userCfg:
+      lib.nameValuePair "patchix-${username}" {
+        description = "patchix: apply config patches for ${username}";
+        wantedBy = ["multi-user.target"];
+        after = ["multi-user.target"];
+        serviceConfig = {
+          Type = "oneshot";
+          User = username;
+          ExecStart = mkUserScript username userCfg;
+          RemainAfterExit = true;
+        };
+      }
+    ) enabledUsers;
+  };
+}
