@@ -1,47 +1,15 @@
 # patchix
 
-Declarative config patching for Nix. Deep-merge Nix-declared values into mutable application config files (JSON, TOML, YAML, INI) without clobbering runtime changes.
+Nix is great at declaring config files. It's bad at letting apps edit them.
 
-## Problem
+patchix sits in the middle: you declare the keys you care about in Nix, and patchix merges them into the actual file on disk at activation time. The app can still write whatever it wants — your declared keys get enforced on the next rebuild, everything else is left alone.
 
-Nix config management tools (hjem, Home Manager) write config files as read-only symlinks into `/nix/store`. Applications that need to write to their own configs (VS Code settings, Claude Code plugin toggles, etc.) can't — the files are immutable.
-
-The workaround is making files writable copies, but then `nixos-rebuild` overwrites everything the application changed.
-
-patchix solves this: declare the keys you care about in Nix, and patchix deep-merges them into the existing mutable file at activation time. Keys you didn't declare are left alone.
-
-## Usage
-
-### CLI
-
-```sh
-# Basic merge — patch values overwrite existing values
-patchix merge --existing config.json --patch patch.json
-
-# No-clobber — only fill in missing keys, preserve runtime changes
-patchix merge --existing config.json --patch patch.json --no-clobber
-
-# Per-path array strategies
-patchix merge --existing config.json --patch patch.json \
-  --default-array replace \
-  --array-strategy 'plugins=append' \
-  --array-strategy 'keybinds=union'
-
-# Explicit format (auto-detected from extension by default)
-patchix merge --existing config --patch patch --format toml
-
-# Output to a different file
-patchix merge --existing config.json --patch patch.json --output merged.json
-```
-
-### NixOS Module
+## Quick start
 
 ```nix
 # flake.nix
-{
-  inputs.patchix.url = "github:y0usaf/patchix";
-  inputs.patchix.inputs.nixpkgs.follows = "nixpkgs";
-}
+inputs.patchix.url = "github:y0usaf/patchix";
+inputs.patchix.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
 ```nix
@@ -51,13 +19,14 @@ patchix merge --existing config.json --patch patch.json --output merged.json
 
   patchix.enable = true;
   patchix.users.alice.patches = {
-    # Clobber mode (default): declared values always win
+
+    # These values always win on rebuild
     ".config/starship.toml" = {
       format = "toml";
       value.character.success_symbol = "[>](bold green)";
     };
 
-    # No-clobber mode: declared values are defaults, runtime changes preserved
+    # These values are defaults — if the app changed them, it sticks
     ".config/Code/User/settings.json" = {
       format = "json";
       clobber = false;
@@ -70,73 +39,68 @@ patchix merge --existing config.json --patch patch.json --output merged.json
 }
 ```
 
-## Merge behavior
+That's it. Each user gets a systemd oneshot that runs `patchix merge` per file.
 
-### Objects
+## `clobber`
 
-Recursive deep merge. Patch keys are inserted into the existing object. Nested objects are always recursed into regardless of `clobber`.
+The interesting bit.
 
-### Scalars
+- **`clobber = true`** (default) — your Nix values overwrite whatever's on disk. Authoritative.
+- **`clobber = false`** — your Nix values only fill in keys that don't exist yet. If the app (or user) changed a value at runtime, it's preserved.
 
-| Mode | Existing | Patch | Result |
-|------|----------|-------|--------|
-| `clobber = true` | `"light"` | `"dark"` | `"dark"` |
-| `clobber = false` | `"light"` | `"dark"` | `"light"` |
-| either | _(missing)_ | `"dark"` | `"dark"` |
+Both modes recurse into nested objects, so you can declare defaults deep in a config tree and they'll fill in without flattening anything above them.
 
-### Arrays
+## Arrays
 
-With `clobber = true`, the array strategy applies:
+When `clobber = true`, arrays use a configurable strategy:
 
-| Strategy | Existing | Patch | Result |
-|----------|----------|-------|--------|
-| `replace` | `[a, b]` | `[c]` | `[c]` |
-| `append` | `[a, b]` | `[c]` | `[a, b, c]` |
-| `prepend` | `[a, b]` | `[c]` | `[c, a, b]` |
-| `union` | `[a, b]` | `[b, c]` | `[a, b, c]` |
+| Strategy | `[a, b]` + `[c]` |
+|----------|-------------------|
+| `replace` (default) | `[c]` |
+| `append` | `[a, b, c]` |
+| `prepend` | `[c, a, b]` |
+| `union` | `[a, b, c]` (deduplicated) |
 
-With `clobber = false`, existing arrays are preserved.
+Set globally with `defaultArrayStrategy` or per-path:
 
-### Key deletion
+```nix
+arrayStrategies."editor.formatters" = "append";
+```
 
-Set a key to `null` in the patch to delete it from the target (RFC 7386).
+When `clobber = false`, existing arrays are left alone.
 
-## NixOS module options
+## Key deletion
 
-### `patchix.enable`
-
-Enable the patchix systemd services.
-
-### `patchix.users.<name>.patches.<path>`
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enable` | bool | `true` | Whether this patch is active |
-| `format` | enum | _(required)_ | `"json"`, `"toml"`, `"yaml"`, or `"ini"` |
-| `value` | attrs | `{}` | Patch content as a Nix attrset |
-| `clobber` | bool | `true` | Overwrite existing values. `false` = only set missing keys |
-| `defaultArrayStrategy` | enum | `"replace"` | `"replace"`, `"append"`, `"prepend"`, or `"union"` |
-| `arrayStrategies` | attrsOf enum | `{}` | Per-path overrides (dot-separated keys) |
-
-Patch targets are relative to the user's home directory. Each user gets a systemd oneshot service (`patchix-<username>`) that runs at activation.
+`null` in the patch deletes the key (per RFC 7386).
 
 ## Formats
 
-All formats are parsed into a common intermediate representation for merging, then serialized back. Format-specific notes:
+JSON, TOML, YAML, INI. Auto-detected from file extension, or set explicitly with `format`.
 
-- **JSON**: Parsed/serialized with `serde_json`. Output is pretty-printed.
-- **TOML**: Datetimes are round-tripped as strings. Null values are not supported (TOML has no null).
-- **YAML**: Parsed/serialized with `serde_yml`.
-- **INI**: Sections become top-level object keys. Sectionless keys go under `__global__`. All values are strings.
+TOML datetimes round-trip as strings. INI sections become top-level keys; sectionless keys go under `__global__`.
 
-## Building
+## CLI
 
 ```sh
-nix build            # via flake
-cargo build --release  # directly
-cargo test             # run tests
+patchix merge -e config.json -p patch.json                    # basic
+patchix merge -e config.json -p patch.json --no-clobber       # defaults only
+patchix merge -e config.json -p patch.json --array-strategy 'plugins=append'
+patchix merge -e config.toml -p patch.toml -o merged.toml     # explicit output
 ```
+
+## Module options
+
+`patchix.users.<name>.patches.<path>`:
+
+| Option | Default | |
+|--------|---------|---|
+| `format` | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"` |
+| `value` | `{}` | Patch content as Nix attrset |
+| `clobber` | `true` | Overwrite existing values |
+| `defaultArrayStrategy` | `"replace"` | `"replace"` `"append"` `"prepend"` `"union"` |
+| `arrayStrategies` | `{}` | Per-path overrides (dot-separated) |
+| `enable` | `true` | Toggle this patch |
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+AGPL-3.0-or-later
