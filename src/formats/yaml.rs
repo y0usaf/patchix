@@ -7,5 +7,8 @@ pub fn parse(input: &str) -> Result<Value> {
 
 pub fn serialize(value: &Value) -> Result<String> {
     let s = serde_yml::to_string(value)?;
-    Ok(s.strip_prefix("---\n").unwrap_or(&s).to_string())
+    let s = s.strip_prefix("---\n")
+        .or_else(|| s.strip_prefix("---\r\n"))
+        .unwrap_or(&s);
+    Ok(s.to_string())
 }

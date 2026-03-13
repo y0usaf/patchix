@@ -51,7 +51,7 @@ Each user gets a systemd oneshot that runs `patchix merge` per file on activatio
 | `arrayStrategies` | `{}` | Per-path overrides (dot-separated) |
 | `enable` | `true` | Toggle this patch |
 
-Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC 7386).
+Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC 7386). Under `--no-clobber`, null patch values are ignored — they do not delete the key. Without `--no-clobber`, null follows RFC 7396 semantics and removes the key.
 
 ### Array strategies (when `clobber = true`)
 

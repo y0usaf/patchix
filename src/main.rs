@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 mod formats;
@@ -44,7 +45,7 @@ enum Command {
         #[arg(long = "array-strategy", value_parser = parse_path_strategy)]
         array_strategies: Vec<(String, ArrayStrategy)>,
 
-        /// Don't overwrite existing values — only fill in missing keys
+        /// Don't overwrite existing values — only fill in missing keys. Null patch values are ignored (not deleted)
         #[arg(long)]
         no_clobber: bool,
     },
@@ -82,7 +83,13 @@ fn parse_path_strategy(s: &str) -> Result<(String, ArrayStrategy), String> {
         .split_once('=')
         .ok_or_else(|| format!("expected 'path=strategy', got '{s}'"))?;
     let strategy_arg = ArrayStrategyArg::from_str(strategy, true)
-        .map_err(|_| format!("unknown strategy '{strategy}'"))?;
+        .map_err(|_| {
+            let valid: Vec<String> = ArrayStrategyArg::value_variants()
+                .iter()
+                .filter_map(|v| v.to_possible_value().map(|pv| pv.get_name().to_string()))
+                .collect();
+            format!("unknown strategy '{}'; valid values: {}", strategy, valid.join(", "))
+        })?;
     Ok((path.to_string(), strategy_arg.into()))
 }
 
@@ -157,18 +164,13 @@ fn main() -> Result<()> {
                         .with_context(|| format!("creating directory {}", parent.display()))?;
                 }
             }
-            let tmp_name = format!(
-                "{}.{}.patchix-tmp",
-                output_path.file_name().unwrap_or_default().to_string_lossy(),
-                std::process::id()
-            );
-            let tmp_path = output_path.with_file_name(tmp_name);
-            std::fs::write(&tmp_path, &result)
-                .with_context(|| format!("writing {}", tmp_path.display()))?;
-            if let Err(e) = std::fs::rename(&tmp_path, output_path) {
-                let _ = std::fs::remove_file(&tmp_path);
-                anyhow::bail!("renaming {} to {}: {e}", tmp_path.display(), output_path.display());
-            }
+            let parent = output_path.parent().unwrap_or(Path::new("."));
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)
+                .with_context(|| format!("creating temp file in {}", parent.display()))?;
+            tmp.write_all(result.as_bytes())
+                .with_context(|| format!("writing temp file"))?;
+            tmp.persist(output_path)
+                .map_err(|e| anyhow::anyhow!("renaming temp file to {}: {}", output_path.display(), e.error))?;
 
             Ok(())
         }

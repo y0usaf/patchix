@@ -9,6 +9,7 @@ pub fn parse(input: &str) -> Result<Value> {
 pub fn serialize(value: &Value) -> Result<String> {
     let toml_val = json_to_toml(value)?;
     let s = ::toml::to_string_pretty(&toml_val)?;
+    // toml::to_string_pretty always ends with \n; the else branch is a safety net
     Ok(if s.ends_with('\n') { s } else { s + "\n" })
 }
 

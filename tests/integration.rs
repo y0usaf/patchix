@@ -89,6 +89,27 @@ fn json_no_clobber() {
 }
 
 #[test]
+fn json_no_clobber_null_preserves_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("config.json");
+    let patch = dir.path().join("patch.json");
+
+    fs::write(&existing, r#"{"a": 1, "b": 2}"#).unwrap();
+    fs::write(&patch, r#"{"b": null}"#).unwrap();
+
+    let status = patchix()
+        .args(["merge", "-e", s(&existing), "-p", s(&patch), "--no-clobber"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let result: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&existing).unwrap()).unwrap();
+    assert_eq!(result["a"], 1);
+    assert_eq!(result["b"], 2); // b is preserved, null did NOT delete it
+}
+
+#[test]
 fn json_null_deletes_key() {
     let dir = tempfile::tempdir().unwrap();
     let existing = dir.path().join("config.json");
@@ -319,6 +340,33 @@ fn json_nested_path_array_strategy() {
     assert_eq!(result["editor"]["formatters"], serde_json::json!(["rustfmt", "prettier"]));
 }
 
+#[test]
+fn json_multiple_array_strategies() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("config.json");
+    let patch = dir.path().join("patch.json");
+
+    fs::write(&existing, r#"{"plugins": ["a"], "keybinds": ["x"]}"#).unwrap();
+    fs::write(&patch, r#"{"plugins": ["b"], "keybinds": ["y"]}"#).unwrap();
+
+    let status = patchix()
+        .args([
+            "merge",
+            "-e", s(&existing),
+            "-p", s(&patch),
+            "--array-strategy", "plugins=append",
+            "--array-strategy", "keybinds=prepend",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let result: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&existing).unwrap()).unwrap();
+    assert_eq!(result["plugins"], serde_json::json!(["a", "b"]));
+    assert_eq!(result["keybinds"], serde_json::json!(["y", "x"]));
+}
+
 // --- TOML ---
 
 #[test]
@@ -520,6 +568,29 @@ fn yaml_no_document_marker_in_output() {
     assert!(!content.starts_with("---"), "Output should not start with YAML --- marker, got: {content}");
 }
 
+#[test]
+fn yaml_input_with_document_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("config.yaml");
+    let patch = dir.path().join("patch.yaml");
+
+    // Input has --- document marker
+    fs::write(&existing, "---\na: 1\nb: 2\n").unwrap();
+    fs::write(&patch, "c: 3\n").unwrap();
+
+    let status = patchix()
+        .args(["merge", "-e", s(&existing), "-p", s(&patch)])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let content = fs::read_to_string(&existing).unwrap();
+    assert!(!content.starts_with("---"), "Output should not have --- marker");
+    assert!(content.contains("a: 1"));
+    assert!(content.contains("b: 2"));
+    assert!(content.contains("c: 3"));
+}
+
 // --- INI ---
 
 #[test]
@@ -599,6 +670,23 @@ fn ini_multiple_sections() {
     assert!(content.contains("key1=v1") || content.contains("key1 = v1"));
     assert!(content.contains("key2=v2") || content.contains("key2 = v2"));
     assert!(content.contains("new=added") || content.contains("new = added"));
+}
+
+#[test]
+fn ini_error_malformed() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("config.ini");
+    let patch = dir.path().join("patch.ini");
+
+    fs::write(&existing, "[section]\nkey = value\n").unwrap();
+    fs::write(&patch, "this is not = valid\n[[broken\n").unwrap();
+
+    let status = patchix()
+        .args(["merge", "-e", s(&existing), "-p", s(&patch)])
+        .status()
+        .unwrap();
+    // Should fail gracefully
+    assert!(!status.success());
 }
 
 fn s(p: &Path) -> &str {
