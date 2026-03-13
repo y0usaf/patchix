@@ -15,6 +15,3 @@ serde_yml = "=0.0.12"
 rust-ini = "0.21"
 anyhow = "1"
 tempfile = "3"
-
-[dev-dependencies]
-serde_yml = "=0.0.12"

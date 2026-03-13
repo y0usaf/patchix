@@ -1,11 +1,17 @@
-flake: {
+{
   config,
   lib,
   pkgs,
   ...
 }: let
   cfg = config.patchix;
-  patchixPkg = flake.packages."${pkgs.stdenv.hostPlatform.system}".default;
+  patchixPkg = pkgs.rustPlatform.buildRustPackage {
+    pname = "patchix";
+    version = "0.1.0";
+    src = lib.cleanSource ../.;
+    cargoLock.lockFile = ../Cargo.lock;
+    meta.mainProgram = "patchix";
+  };
 
   # Generate INI content from a nested attrset:
   # { "__global__" = { key = val; }; section = { key = val; }; }
@@ -27,7 +33,11 @@ in {
       patches = lib.mkOption {
         type = lib.types.attrsOf (lib.types.submodule ({name, ...}: {
     options = {
-      enable = lib.mkEnableOption "this patch" // {default = true;};
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to enable this patch.";
+      };
 
       clobber = lib.mkOption {
         type = lib.types.bool;
@@ -90,6 +100,18 @@ in {
   };
 
   config = lib.mkIf (cfg.enable && enabledUsers != {}) {
+    assertions =
+      lib.concatLists (lib.mapAttrsToList (username: userCfg:
+        [{
+          assertion = config.users.users ? ${username};
+          message = "patchix: user '${username}' in patchix.users is not defined in users.users";
+        }]
+        ++ lib.mapAttrsToList (target: _: {
+          assertion = !(lib.hasInfix ".." target);
+          message = "patchix: patch target '${target}' for user '${username}' contains '..' path traversal";
+        }) userCfg.patches
+      ) enabledUsers);
+
     # Add patchix to system packages so it's available
     environment.systemPackages = [patchixPkg];
 
@@ -119,13 +141,17 @@ in {
       then (pkgs.formats.toml {}).generate "patch-${name}" patchCfg.value
       else if patchCfg.format == "yaml"
       then (pkgs.formats.yaml {}).generate "patch-${name}" patchCfg.value
-      else (attrs:
-    lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (section: props: let
-        header = if section == "__global__" then "" else "[${section}]\n";
-        lines = lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "${k} = ${toString v}") props);
-      in "${header}${lines}") attrs
-    ) + "\n") patchCfg.value;
+      else (attrs: let
+  formatIniVal = v:
+    if builtins.isBool v then lib.boolToString v
+    else if builtins.isInt v || builtins.isFloat v then toString v
+    else if builtins.isString v then v
+    else throw "patchix: INI values must be scalars, got ${builtins.typeOf v}";
+  renderSection = section: props: let
+    header = if section == "__global__" then "" else "[${section}]\n";
+    lines = lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "${k} = ${formatIniVal v}") props);
+  in "${header}${lines}";
+in lib.concatStringsSep "\n" (lib.mapAttrsToList renderSection attrs) + "\n") patchCfg.value;
   in
     if builtins.isString content
     then pkgs.writeText "patchix-${name}.${ext}" content
@@ -138,8 +164,8 @@ in {
     ${lib.getExe patchixPkg} merge \
       --existing "${fullTarget}" \
       --patch "${patchFile}" \
-      --format ${patchCfg.format} \
-      --default-array ${patchCfg.defaultArrayStrategy} \
+      --format ${lib.escapeShellArg patchCfg.format} \
+      --default-array ${lib.escapeShellArg patchCfg.defaultArrayStrategy} \
       ${lib.optionalString (!patchCfg.clobber) "--no-clobber"} \
       ${strategyArgs}
   '') config.users.users."${username}".home) (lib.filterAttrs (_: p: p.enable) userCfg.patches)

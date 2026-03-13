@@ -22,7 +22,7 @@
       };
     });
 
-    nixosModules.default = import ./nix/module.nix self;
+    nixosModules.default = import ./nix/module.nix;
 
     devShells = forAllSystems (pkgs: {
       default = pkgs.mkShell {
