@@ -81,14 +81,9 @@ fn parse_path_strategy(s: &str) -> Result<(String, ArrayStrategy), String> {
     let (path, strategy) = s
         .split_once('=')
         .ok_or_else(|| format!("expected 'path=strategy', got '{s}'"))?;
-    let strategy = match strategy {
-        "replace" => ArrayStrategy::Replace,
-        "append" => ArrayStrategy::Append,
-        "prepend" => ArrayStrategy::Prepend,
-        "union" => ArrayStrategy::Union,
-        _ => return Err(format!("unknown strategy '{strategy}'")),
-    };
-    Ok((path.to_string(), strategy))
+    let strategy_arg = ArrayStrategyArg::from_str(strategy, true)
+        .map_err(|_| format!("unknown strategy '{strategy}'"))?;
+    Ok((path.to_string(), strategy_arg.into()))
 }
 
 fn detect_format(path: &Path) -> Result<Format> {
@@ -170,8 +165,10 @@ fn main() -> Result<()> {
             let tmp_path = output_path.with_file_name(tmp_name);
             std::fs::write(&tmp_path, &result)
                 .with_context(|| format!("writing {}", tmp_path.display()))?;
-            std::fs::rename(&tmp_path, output_path)
-                .with_context(|| format!("renaming to {}", output_path.display()))?;
+            if let Err(e) = std::fs::rename(&tmp_path, output_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                anyhow::bail!("renaming {} to {}: {e}", tmp_path.display(), output_path.display());
+            }
 
             Ok(())
         }

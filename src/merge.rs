@@ -40,8 +40,11 @@ pub fn merge(existing: Value, patch: Value, config: &MergeConfig, path: &str) ->
                 };
 
                 if patch_val.is_null() {
-                    // RFC 7386: null in patch means delete the key
-                    base.remove(&key);
+                    // RFC 7386: null in patch means delete the key (only when clobber is enabled)
+                    if config.clobber {
+                        base.remove(&key);
+                    }
+                    // else: no-clobber — preserve existing key, ignore null
                 } else if let Some(base_val) = base.remove(&key) {
                     // Both are objects: always recurse deeper regardless of clobber
                     if base_val.is_object() && patch_val.is_object() {
@@ -328,5 +331,14 @@ mod tests {
             "runtimeKey": "preserved",
             "model": "opus"
         }));
+    }
+
+    #[test]
+    fn no_clobber_protects_against_null_deletion() {
+        let existing = json!({"a": 1, "b": 2});
+        let patch = json!({"b": null});
+        let result = merge(existing, patch, &no_clobber_config(), "");
+        // With no-clobber, null patch should not delete the key
+        assert_eq!(result, json!({"a": 1, "b": 2}));
     }
 }

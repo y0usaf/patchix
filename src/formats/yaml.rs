@@ -6,5 +6,6 @@ pub fn parse(input: &str) -> Result<Value> {
 }
 
 pub fn serialize(value: &Value) -> Result<String> {
-    Ok(serde_yml::to_string(value)?)
+    let s = serde_yml::to_string(value)?;
+    Ok(s.strip_prefix("---\n").unwrap_or(&s).to_string())
 }
