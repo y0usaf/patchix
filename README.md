@@ -51,7 +51,7 @@ Each user gets a systemd oneshot that runs `patchix merge` per file on activatio
 | `arrayStrategies` | `{}` | Per-path overrides (dot-separated) |
 | `enable` | `true` | Toggle this patch |
 
-Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC 7386). Under `--no-clobber`, null patch values are ignored — they do not delete the key. Without `--no-clobber`, null follows RFC 7396 semantics and removes the key.
+Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC 7396). Under `--no-clobber`, null patch values are ignored — they do not delete the key.
 
 ### Array strategies (when `clobber = true`)
 
@@ -66,9 +66,9 @@ Per-path: `arrayStrategies."editor.formatters" = "append";`
 
 ## Formats
 
-Auto-detected from file extension. Supported: `json`/`jsonc`, `toml`, `yaml`/`yml`, `ini`/`conf`/`cfg`.
+Auto-detected from file extension. Supported: `json`, `toml`, `yaml`/`yml`, `ini`/`conf`/`cfg`.
 
-TOML datetimes round-trip as strings. INI sections become top-level keys; sectionless keys go under `__global__`.
+TOML datetimes round-trip as strings. INI sections become top-level keys; sectionless keys go under `__global__`. YAML uses implicit typing: unquoted `yes`/`no`/`true`/`false` become booleans and bare numbers become numeric — quote values to preserve them as strings.
 
 ## CLI
 

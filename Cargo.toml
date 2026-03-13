@@ -11,9 +11,10 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
-serde_yml = "0.0.12"
+serde_yml = "=0.0.12"
 rust-ini = "0.21"
 anyhow = "1"
 tempfile = "3"
 
 [dev-dependencies]
+serde_yml = "=0.0.12"

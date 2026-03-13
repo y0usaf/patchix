@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ArrayStrategy {
     Replace,
     Append,
@@ -26,7 +26,7 @@ impl MergeConfig {
     }
 }
 
-/// Deep merge patch into existing value following RFC 7386 semantics
+/// Deep merge patch into existing value following RFC 7396 semantics
 /// with configurable array strategies.
 pub fn merge(existing: Value, patch: Value, config: &MergeConfig, path: &str) -> Value {
     match (existing, patch) {
@@ -84,6 +84,7 @@ pub fn merge(existing: Value, patch: Value, config: &MergeConfig, path: &str) ->
                         Value::Array(result)
                     }
                     ArrayStrategy::Union => {
+                        // O(n*m) — acceptable for config file sizes; Value doesn't implement Hash
                         let mut result = base;
                         for item in patch {
                             if !result.contains(&item) {

@@ -59,6 +59,17 @@ enum FormatArg {
     Ini,
 }
 
+impl From<FormatArg> for Format {
+    fn from(a: FormatArg) -> Self {
+        match a {
+            FormatArg::Json => Format::Json,
+            FormatArg::Toml => Format::Toml,
+            FormatArg::Yaml => Format::Yaml,
+            FormatArg::Ini => Format::Ini,
+        }
+    }
+}
+
 #[derive(Clone, ValueEnum)]
 enum ArrayStrategyArg {
     Replace,
@@ -95,13 +106,77 @@ fn parse_path_strategy(s: &str) -> Result<(String, ArrayStrategy), String> {
 
 fn detect_format(path: &Path) -> Result<Format> {
     match path.extension().and_then(|e| e.to_str()) {
-        Some("json" | "jsonc") => Ok(Format::Json),
+        Some("json") => Ok(Format::Json),
         Some("toml") => Ok(Format::Toml),
         Some("yaml" | "yml") => Ok(Format::Yaml),
         Some("ini" | "conf" | "cfg") => Ok(Format::Ini),
         Some(ext) => anyhow::bail!("unknown file extension '.{ext}', use --format to specify"),
         None => anyhow::bail!("no file extension, use --format to specify"),
     }
+}
+
+fn run_merge(
+    existing: PathBuf,
+    patch: PathBuf,
+    output: Option<PathBuf>,
+    format: Option<FormatArg>,
+    default_array: ArrayStrategyArg,
+    array_strategies: Vec<(String, ArrayStrategy)>,
+    no_clobber: bool,
+) -> Result<()> {
+    let format = format.map(Format::from).map_or_else(|| detect_format(&existing), Ok)?;
+
+    let config = MergeConfig {
+        default_array: default_array.into(),
+        path_strategies: array_strategies.into_iter().collect::<HashMap<_, _>>(),
+        clobber: !no_clobber,
+    };
+
+    // Read existing file (empty object if missing); avoid TOCTOU from exists()+read pair
+    let existing_content = match std::fs::read_to_string(&existing) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", existing.display())),
+    };
+
+    let patch_content = std::fs::read_to_string(&patch)
+        .with_context(|| format!("reading {}", patch.display()))?;
+
+    let existing_val = if existing_content.is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        formats::parse(&existing_content, format)
+            .with_context(|| format!("parsing {}", existing.display()))?
+    };
+
+    let patch_val = formats::parse(&patch_content, format)
+        .with_context(|| format!("parsing {}", patch.display()))?;
+
+    let merged = merge::merge(existing_val, patch_val, &config, "");
+
+    let result = formats::serialize(&merged, format)?;
+
+    // Atomic write: write to temp file then rename
+    let output_path = output.as_ref().unwrap_or(&existing);
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating directory {}", parent.display()))?;
+        }
+    }
+    let parent = output_path.parent().unwrap_or(Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temp file in {}", parent.display()))?;
+    // Preserve original file permissions so the atomic rename doesn't change access modes
+    if let Ok(meta) = std::fs::metadata(output_path) {
+        let _ = std::fs::set_permissions(tmp.path(), meta.permissions());
+    }
+    tmp.write_all(result.as_bytes())
+        .context("writing temp file")?;
+    tmp.persist(output_path)
+        .map_err(|e| anyhow::anyhow!("renaming temp file to {}: {}", output_path.display(), e.error))?;
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -116,63 +191,6 @@ fn main() -> Result<()> {
             default_array,
             array_strategies,
             no_clobber,
-        } => {
-            let format = match format {
-                Some(FormatArg::Json) => Format::Json,
-                Some(FormatArg::Toml) => Format::Toml,
-                Some(FormatArg::Yaml) => Format::Yaml,
-                Some(FormatArg::Ini) => Format::Ini,
-                None => detect_format(&existing)?,
-            };
-
-            let config = MergeConfig {
-                default_array: default_array.into(),
-                path_strategies: array_strategies.into_iter().collect::<HashMap<_, _>>(),
-                clobber: !no_clobber,
-            };
-
-            // Read existing file (empty object if missing)
-            let existing_content = if existing.exists() {
-                std::fs::read_to_string(&existing)
-                    .with_context(|| format!("reading {}", existing.display()))?
-            } else {
-                String::new()
-            };
-
-            let patch_content = std::fs::read_to_string(&patch)
-                .with_context(|| format!("reading {}", patch.display()))?;
-
-            let existing_val = if existing_content.is_empty() {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else {
-                formats::parse(&existing_content, format)
-                    .with_context(|| format!("parsing {}", existing.display()))?
-            };
-
-            let patch_val = formats::parse(&patch_content, format)
-                .with_context(|| format!("parsing {}", patch.display()))?;
-
-            let merged = merge::merge(existing_val, patch_val, &config, "");
-
-            let result = formats::serialize(&merged, format)?;
-
-            // Atomic write: write to temp file then rename
-            let output_path = output.as_ref().unwrap_or(&existing);
-            if let Some(parent) = output_path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("creating directory {}", parent.display()))?;
-                }
-            }
-            let parent = output_path.parent().unwrap_or(Path::new("."));
-            let mut tmp = tempfile::NamedTempFile::new_in(parent)
-                .with_context(|| format!("creating temp file in {}", parent.display()))?;
-            tmp.write_all(result.as_bytes())
-                .with_context(|| format!("writing temp file"))?;
-            tmp.persist(output_path)
-                .map_err(|e| anyhow::anyhow!("renaming temp file to {}: {}", output_path.display(), e.error))?;
-
-            Ok(())
-        }
+        } => run_merge(existing, patch, output, format, default_array, array_strategies, no_clobber),
     }
 }

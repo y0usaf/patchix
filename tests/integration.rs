@@ -591,6 +591,58 @@ fn yaml_input_with_document_marker() {
     assert!(content.contains("c: 3"));
 }
 
+// --- YAML array strategies ---
+
+#[test]
+fn yaml_array_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("config.yaml");
+    let patch = dir.path().join("patch.yaml");
+
+    fs::write(&existing, "plugins:\n  - a\n  - b\n").unwrap();
+    fs::write(&patch, "plugins:\n  - c\n").unwrap();
+
+    let status = patchix()
+        .args([
+            "merge",
+            "-e", s(&existing),
+            "-p", s(&patch),
+            "--default-array", "append",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let content = fs::read_to_string(&existing).unwrap();
+    let result: serde_json::Value = serde_yml::from_str(&content).unwrap();
+    assert_eq!(result["plugins"], serde_json::json!(["a", "b", "c"]));
+}
+
+#[test]
+fn yaml_array_union() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("config.yaml");
+    let patch = dir.path().join("patch.yaml");
+
+    fs::write(&existing, "items:\n  - 1\n  - 2\n  - 3\n").unwrap();
+    fs::write(&patch, "items:\n  - 2\n  - 3\n  - 4\n").unwrap();
+
+    let status = patchix()
+        .args([
+            "merge",
+            "-e", s(&existing),
+            "-p", s(&patch),
+            "--default-array", "union",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let content = fs::read_to_string(&existing).unwrap();
+    let result: serde_json::Value = serde_yml::from_str(&content).unwrap();
+    assert_eq!(result["items"], serde_json::json!([1, 2, 3, 4]));
+}
+
 // --- INI ---
 
 #[test]
