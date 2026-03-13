@@ -50,8 +50,12 @@ pub fn merge(existing: Value, patch: Value, config: &MergeConfig, path: &str) ->
                     if base_val.is_object() && patch_val.is_object() {
                         base.insert(key, merge(base_val, patch_val, config, &child_path));
                     } else if config.clobber {
-                        // Clobber: patch wins
-                        base.insert(key, merge(base_val, patch_val, config, &child_path));
+                        // Clobber: patch wins — recurse for arrays (strategy handling), direct replace otherwise
+                        if base_val.is_array() && patch_val.is_array() {
+                            base.insert(key, merge(base_val, patch_val, config, &child_path));
+                        } else {
+                            base.insert(key, patch_val);
+                        }
                     } else {
                         // No clobber: existing value preserved
                         base.insert(key, base_val);

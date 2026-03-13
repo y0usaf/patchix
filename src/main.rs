@@ -152,6 +152,13 @@ fn run_merge(
     let patch_val = formats::parse(&patch_content, format)
         .with_context(|| format!("parsing {}", patch.display()))?;
 
+    if patch_val.is_null() {
+        anyhow::bail!(
+            "patch file {} is empty or null — nothing to merge",
+            patch.display()
+        );
+    }
+
     let merged = merge::merge(existing_val, patch_val, &config, "");
 
     let result = formats::serialize(&merged, format)?;
