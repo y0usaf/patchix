@@ -77,6 +77,8 @@ patchix merge -e config.json -p patch.json
 patchix merge -e config.json -p patch.json --no-clobber
 patchix merge -e config.json -p patch.json --array-strategy 'plugins=append'
 patchix merge -e config.toml -p patch.toml -o merged.toml
+patchix merge -e config.yml -p patch.yml --default-array append
+patchix merge -e config -p patch.json --format json
 ```
 
 ## License
