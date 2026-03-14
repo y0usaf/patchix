@@ -32,43 +32,59 @@ inputs.patchix.inputs.nixpkgs.follows = "nixpkgs";
         "editor.tabSize" = 2;
       };
     };
+
+    # __global__ holds sectionless keys.
+    ".config/foot/config.ini" = {
+      format = "ini";
+      value = {
+        __global__ = { font = "monospace:size=12"; };
+        colors-dark = { alpha = 0.85; };
+      };
+    };
   };
 }
 ```
 
-Each user gets a systemd oneshot that runs `patchix merge` per file on activation.
+Each user gets a systemd oneshot that runs `patchix merge` per file on
+activation.
 
 ## Options
 
 `patchix.users.<name>.patches.<path>`:
 
-| Option | Default | |
-|--------|---------|---|
-| `format` | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"` |
-| `value` | `{}` | Patch content as Nix attrset |
-| `clobber` | `true` | `true`: overwrite existing values. `false`: only fill in missing keys |
-| `defaultArrayStrategy` | `"replace"` | `"replace"` `"append"` `"prepend"` `"union"` |
-| `arrayStrategies` | `{}` | Per-path overrides (dot-separated) |
-| `enable` | `true` | Toggle this patch |
+| Option                 | Default      |                                                                       |
+| ---------------------- | ------------ | --------------------------------------------------------------------- |
+| `format`               | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"`                                    |
+| `value`                | `{}`         | Patch content as Nix attrset                                          |
+| `clobber`              | `true`       | `true`: overwrite existing values. `false`: only fill in missing keys |
+| `defaultArrayStrategy` | `"replace"`  | `"replace"` `"append"` `"prepend"` `"union"`                          |
+| `arrayStrategies`      | `{}`         | Per-path overrides (dot-separated)                                    |
+| `enable`               | `true`       | Toggle this patch                                                     |
 
-Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC 7396). Under `--no-clobber`, null patch values are ignored — they do not delete the key.
+Both modes recurse into nested objects. Setting a key to `null` deletes it (RFC
+7396). Under `--no-clobber`, null patch values are ignored — they do not delete
+the key.
 
 ### Array strategies (when `clobber = true`)
 
-| Strategy | `[a, b]` + `[c]` |
-|----------|-------------------|
-| `replace` (default) | `[c]` |
-| `append` | `[a, b, c]` |
-| `prepend` | `[c, a, b]` |
-| `union` | `[a, b, c]` (deduplicated) |
+| Strategy            | `[a, b]` + `[c]`           |
+| ------------------- | -------------------------- |
+| `replace` (default) | `[c]`                      |
+| `append`            | `[a, b, c]`                |
+| `prepend`           | `[c, a, b]`                |
+| `union`             | `[a, b, c]` (deduplicated) |
 
 Per-path: `arrayStrategies."editor.formatters" = "append";`
 
 ## Formats
 
-Auto-detected from file extension. Supported: `json`, `toml`, `yaml`/`yml`, `ini`/`conf`/`cfg`.
+Auto-detected from file extension. Supported: `json`, `toml`, `yaml`/`yml`,
+`ini`/`conf`/`cfg`.
 
-TOML datetimes round-trip as strings. INI sections become top-level keys; sectionless keys go under `__global__`. YAML uses implicit typing: unquoted `yes`/`no`/`true`/`false` become booleans and bare numbers become numeric — quote values to preserve them as strings.
+TOML datetimes round-trip as strings. INI sections map to top-level keys;
+sectionless (global) keys are grouped under `__global__`. YAML uses implicit
+typing: unquoted `yes`/`no`/`true`/`false` become booleans and bare numbers
+become numeric — quote values to preserve them as strings.
 
 ## CLI
 
