@@ -44,7 +44,13 @@
       else if patchCfg.format == "yaml"
       then (pkgs.formats.yaml {}).generate "patch-${name}" patchCfg.value
       else if patchCfg.format == "ini"
-      then (pkgs.formats.ini {}).generate "patch-${name}" patchCfg.value
+      then
+        lib.generators.toINIWithGlobalSection {} {
+          # map __global__
+          globalSection = patchCfg.value.__global__ or {};
+          # everything else
+          sections = builtins.removeAttrs patchCfg.value ["__global__"];
+        }
       else builtins.throw "Unsupported patch format: ${patchCfg.format}";
   in
     if builtins.isString content
