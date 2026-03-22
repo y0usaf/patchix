@@ -1,6 +1,6 @@
 [package]
 name = "patchix"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Declarative config file patcher for Nix — merge patches into mutable application configs"
 license = "AGPL-3.0-or-later"
