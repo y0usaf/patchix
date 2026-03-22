@@ -60,10 +60,13 @@ pub fn parse(input: &str) -> Result<Value> {
         .context("empty .reg file")?
         .trim();
 
-    if header != "Windows Registry Editor Version 5.00" && header != "REGEDIT4" {
+    if header != "Windows Registry Editor Version 5.00"
+        && header != "REGEDIT4"
+        && header != "WINE REGISTRY Version 2"
+    {
         bail!(
             "unrecognised .reg header: '{}'; expected \
-             'Windows Registry Editor Version 5.00' or 'REGEDIT4'",
+             'Windows Registry Editor Version 5.00', 'REGEDIT4', or 'WINE REGISTRY Version 2'",
             header
         );
     }
@@ -101,8 +104,8 @@ pub fn parse(input: &str) -> Result<Value> {
         // comments are full-line (;), so we just check the start.
         let line = raw_line.trim_end();
 
-        // Comment line
-        if line.trim_start().starts_with(';') {
+        // Comment line or Wine metadata line (#time=..., #arch=..., etc.)
+        if line.trim_start().starts_with(';') || line.trim_start().starts_with('#') {
             // flush any pending logical line first
             flush_logical(&mut logical, &current_key, &mut root)?;
             continue;
@@ -127,18 +130,22 @@ pub fn parse(input: &str) -> Result<Value> {
         let trimmed = line.trim();
 
         // Section header: [KEY] or [-KEY] (delete key)
+        // Wine format may append a timestamp: [KEY] 1234567890
         if trimmed.starts_with('[') {
-            if trimmed.starts_with("[-") && trimmed.ends_with(']') {
-                // Key deletion marker — store as null
-                let key = trimmed[2..trimmed.len() - 1].to_string();
-                root.insert(key, Value::Null);
-                current_key = None;
-            } else if trimmed.ends_with(']') {
-                let key = trimmed[1..trimmed.len() - 1].to_string();
-                // Ensure the key exists in root (may already be there if duplicate)
-                root.entry(key.clone())
-                    .or_insert_with(|| Value::Object(Map::new()));
-                current_key = Some(key);
+            // Find the closing bracket
+            if let Some(close) = trimmed.find(']') {
+                let inner = &trimmed[1..close];
+                if inner.starts_with('-') {
+                    // Key deletion marker — store as null
+                    let key = inner[1..].to_string();
+                    root.insert(key, Value::Null);
+                    current_key = None;
+                } else {
+                    let key = inner.to_string();
+                    root.entry(key.clone())
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    current_key = Some(key);
+                }
             } else {
                 bail!("malformed section header: '{}'", trimmed);
             }
@@ -296,6 +303,35 @@ fn parse_data(data: &str) -> Result<Value> {
             other => other.to_string(), // "hex(3)", "hex(4)", …
         };
         return Ok(make_typed_entry(&tag, Value::String(hex_data.to_string())));
+    }
+
+    // Wine-specific: str(N):"..." — human-readable encoding for string types
+    // str(2) = REG_EXPAND_SZ, str(7) = REG_MULTI_SZ, etc.
+    if let Some(rest) = data.strip_prefix("str(") {
+        if let Some(close) = rest.find("):") {
+            let n: u32 = rest[..close]
+                .parse()
+                .with_context(|| format!("invalid str(N) type: '{data}'"))?;
+            let quoted = &rest[close + 2..];
+            let (s, _) = extract_quoted(quoted)
+                .with_context(|| format!("malformed str(N) value: '{data}'"))?;
+            let type_tag = match n {
+                1 => "sz",
+                2 => "expand_sz",
+                7 => "multi_sz",
+                _ => "sz", // fallback: treat unknown str(N) as plain string
+            };
+            if n == 7 {
+                // Multi-string: split on \0
+                let parts: Vec<Value> = s
+                    .split('\0')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| Value::String(p.to_string()))
+                    .collect();
+                return Ok(make_entry(type_tag, Value::Array(parts)));
+            }
+            return Ok(make_entry(type_tag, Value::String(s)));
+        }
     }
 
     bail!("unrecognised data format: '{data}'");
