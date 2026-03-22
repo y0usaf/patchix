@@ -160,9 +160,12 @@ pub fn parse(input: &str) -> Result<Value> {
             continue;
         }
 
-        // Empty line: flush pending
+        // Empty line: flush pending; also accumulate into preamble if before first section
         if line.trim().is_empty() {
             flush_logical(&mut logical, &current_key, &mut root)?;
+            if current_key.is_none() {
+                preamble.push(Value::String(String::new()));
+            }
             continue;
         }
 
@@ -207,8 +210,13 @@ pub fn parse(input: &str) -> Result<Value> {
             } else {
                 bail!("malformed section header: '{}'", trimmed);
             }
-            // Flush preamble into root now that we've seen the first section
+            // Flush preamble into root now that we've seen the first section.
+            // Strip trailing empty lines — the \r\n before each section in serialize
+            // already provides the blank line separator.
             if !preamble.is_empty() {
+                while preamble.last() == Some(&Value::String(String::new())) {
+                    preamble.pop();
+                }
                 root.insert("__preamble__".to_string(), Value::Array(preamble.clone()));
                 preamble.clear();
             }
@@ -453,7 +461,8 @@ pub fn serialize(value: &Value) -> Result<String> {
     let wine_format = header == "WINE REGISTRY Version 2";
     let mut out = format!("{header}\r\n");
 
-    // Emit preamble lines (comments/metadata before first section)
+    // Emit preamble lines (comments/metadata before first section).
+    // Each preamble line already includes blank lines as empty strings.
     if let Some(Value::Array(preamble)) = root.get("__preamble__") {
         for line in preamble {
             if let Some(s) = line.as_str() {
@@ -470,13 +479,16 @@ pub fn serialize(value: &Value) -> Result<String> {
         out.push_str("\r\n");
 
         // Wine format uses short paths (without HKEY_CURRENT_USER\ prefix)
-        let section_name = if wine_format {
+        // and escapes \ as \\ in section header names.
+        let section_short = if wine_format {
             section
                 .strip_prefix("HKEY_CURRENT_USER\\")
                 .unwrap_or(section)
         } else {
             section.as_str()
         };
+        let section_name_escaped = section_short.replace('\\', "\\\\");
+        let section_name = section_name_escaped.as_str();
 
         if section_val.is_null() {
             // Key deletion
@@ -1001,7 +1013,7 @@ mod tests {
             "HKEY_CURRENT_USER\\ObsoleteKey": null
         });
         let s = serialize(&v).unwrap();
-        assert!(s.contains("[-HKEY_CURRENT_USER\\ObsoleteKey]"), "got: {s}");
+        assert!(s.contains("[-HKEY_CURRENT_USER\\\\ObsoleteKey]"), "got: {s}");
     }
 
     // ── multiple sections / keys ───────────────────────────────────────────────
@@ -1393,7 +1405,7 @@ mod tests {
     fn empty_section_serializes_and_reparses() {
         let v = json!({ "HKCU\\Empty": {} });
         let s = serialize(&v).unwrap();
-        assert!(s.contains("[HKCU\\Empty]"), "got: {s}");
+        assert!(s.contains("[HKCU\\\\Empty]"), "got: {s}");
         let reparsed = parse(&s).unwrap();
         assert_eq!(reparsed["HKCU\\Empty"], json!({}));
     }
