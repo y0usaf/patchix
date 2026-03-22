@@ -459,7 +459,9 @@ pub fn serialize(value: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .unwrap_or("Windows Registry Editor Version 5.00");
     let wine_format = header == "WINE REGISTRY Version 2";
-    let mut out = format!("{header}\r\n");
+    // Wine's user.reg uses LF line endings; standard .reg uses CRLF.
+    let eol = if wine_format { "\n" } else { "\r\n" };
+    let mut out = format!("{header}{eol}");
 
     // Emit preamble lines (comments/metadata before first section).
     // Each preamble line already includes blank lines as empty strings.
@@ -467,7 +469,7 @@ pub fn serialize(value: &Value) -> Result<String> {
         for line in preamble {
             if let Some(s) = line.as_str() {
                 out.push_str(s);
-                out.push_str("\r\n");
+                out.push_str(eol);
             }
         }
     }
@@ -476,7 +478,7 @@ pub fn serialize(value: &Value) -> Result<String> {
         if section == "__header__" || section == "__preamble__" {
             continue;
         }
-        out.push_str("\r\n");
+        out.push_str(eol);
 
         // Wine format uses short paths (without HKEY_CURRENT_USER\ prefix)
         // and escapes \ as \\ in section header names.
@@ -496,7 +498,7 @@ pub fn serialize(value: &Value) -> Result<String> {
             out.push('-');
             out.push_str(section_name);
             out.push(']');
-            out.push_str("\r\n");
+            out.push_str(eol);
             continue;
         }
 
@@ -512,13 +514,13 @@ pub fn serialize(value: &Value) -> Result<String> {
             out.push(' ');
             out.push_str(mtime);
         }
-        out.push_str("\r\n");
+        out.push_str(eol);
 
         // Emit Wine #time= line if present
         if let Some(time) = props.get("__time__").and_then(Value::as_str) {
             out.push_str("#time=");
             out.push_str(time);
-            out.push_str("\r\n");
+            out.push_str(eol);
         }
 
         for (name, entry) in props {
@@ -529,7 +531,7 @@ pub fn serialize(value: &Value) -> Result<String> {
                 // Value deletion
                 out.push('-');
                 out.push_str(&quote_value_name(name));
-                out.push_str("\r\n");
+                out.push_str(eol);
                 continue;
             }
 
@@ -553,13 +555,13 @@ pub fn serialize(value: &Value) -> Result<String> {
             out.push_str(&name_part);
             out.push('=');
             out.push_str(&data_part);
-            out.push_str("\r\n");
+            out.push_str(eol);
         }
     }
 
     // Ensure trailing newline
-    if !out.ends_with("\r\n") {
-        out.push_str("\r\n");
+    if !out.ends_with(eol) {
+        out.push_str(eol);
     }
 
     Ok(out)
@@ -1131,8 +1133,9 @@ mod tests {
                    \"UseGLSL\"=\"enabled\"\r\n";
         let v = parse(reg).unwrap();
         let s = serialize(&v).unwrap();
+        // Wine format uses LF line endings
         assert!(
-            s.starts_with("WINE REGISTRY Version 2\r\n"),
+            s.starts_with("WINE REGISTRY Version 2\n"),
             "header not preserved, got: {}",
             &s[..50.min(s.len())]
         );
@@ -1168,8 +1171,9 @@ mod tests {
         let output = serialize(&merged).unwrap();
 
         // Existing file's header wins (it's in the base, not the patch)
+        // Wine format uses LF line endings
         assert!(
-            output.starts_with("WINE REGISTRY Version 2\r\n"),
+            output.starts_with("WINE REGISTRY Version 2\n"),
             "Wine header not preserved after merge, got: {}",
             &output[..60.min(output.len())]
         );
