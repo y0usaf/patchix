@@ -163,11 +163,11 @@ pub fn parse(input: &str) -> Result<Value> {
                 let inner = &trimmed[1..close];
                 if inner.starts_with('-') {
                     // Key deletion marker — store as null
-                    let key = normalize_section_key(&inner[1..]);
+                    let key = normalize_section_key(&inner[1..].replace("\\\\", "\\"));
                     root.insert(key, Value::Null);
                     current_key = None;
                 } else {
-                    let key = normalize_section_key(inner);
+                    let key = normalize_section_key(&inner.replace("\\\\", "\\"));
                     root.entry(key.clone())
                         .or_insert_with(|| Value::Object(Map::new()));
                     current_key = Some(key);
