@@ -104,6 +104,8 @@ pub fn parse(input: &str) -> Result<Value> {
         Value::String(header.to_string()),
     );
     let mut current_key: Option<String> = None;
+    // Preamble lines (comments/metadata before first section header).
+    let mut preamble: Vec<Value> = Vec::new();
 
     // Collect logical lines (backslash-continuation)
     let mut logical = String::new();
@@ -139,6 +141,22 @@ pub fn parse(input: &str) -> Result<Value> {
         if line.trim_start().starts_with(';') || line.trim_start().starts_with('#') {
             // flush any pending logical line first
             flush_logical(&mut logical, &current_key, &mut root)?;
+            let trimmed = line.trim();
+            if let Some(ref key) = current_key {
+                // Per-section metadata: store as __time__ inside the section
+                if let Some(val) = trimmed.strip_prefix("#time=") {
+                    let section = root
+                        .entry(key.clone())
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    if let Some(obj) = section.as_object_mut() {
+                        obj.insert("__time__".to_string(), Value::String(val.to_string()));
+                    }
+                }
+                // Other per-section # lines are silently dropped (rare)
+            } else {
+                // Pre-section metadata: accumulate into preamble
+                preamble.push(Value::String(trimmed.to_string()));
+            }
             continue;
         }
 
@@ -166,6 +184,8 @@ pub fn parse(input: &str) -> Result<Value> {
             // Find the closing bracket
             if let Some(close) = trimmed.find(']') {
                 let inner = &trimmed[1..close];
+                // Section header may have a trailing mtime: [Key] 1234567890
+                let mtime = trimmed[close + 1..].trim();
                 if inner.starts_with('-') {
                     // Key deletion marker — store as null
                     let key = normalize_section_key(&inner[1..].replace("\\\\", "\\"));
@@ -173,12 +193,24 @@ pub fn parse(input: &str) -> Result<Value> {
                     current_key = None;
                 } else {
                     let key = normalize_section_key(&inner.replace("\\\\", "\\"));
-                    root.entry(key.clone())
+                    let section = root
+                        .entry(key.clone())
                         .or_insert_with(|| Value::Object(Map::new()));
+                    if !mtime.is_empty() {
+                        if let Some(obj) = section.as_object_mut() {
+                            obj.entry("__mtime__".to_string())
+                                .or_insert_with(|| Value::String(mtime.to_string()));
+                        }
+                    }
                     current_key = Some(key);
                 }
             } else {
                 bail!("malformed section header: '{}'", trimmed);
+            }
+            // Flush preamble into root now that we've seen the first section
+            if !preamble.is_empty() {
+                root.insert("__preamble__".to_string(), Value::Array(preamble.clone()));
+                preamble.clear();
             }
             continue;
         }
@@ -189,6 +221,11 @@ pub fn parse(input: &str) -> Result<Value> {
 
     // Flush final logical line
     flush_logical(&mut logical, &current_key, &mut root)?;
+
+    // Any remaining preamble (file with no sections)
+    if !preamble.is_empty() {
+        root.insert("__preamble__".to_string(), Value::Array(preamble));
+    }
 
     Ok(Value::Object(root))
 }
@@ -415,8 +452,18 @@ pub fn serialize(value: &Value) -> Result<String> {
         .unwrap_or("Windows Registry Editor Version 5.00");
     let mut out = format!("{header}\r\n");
 
+    // Emit preamble lines (comments/metadata before first section)
+    if let Some(Value::Array(preamble)) = root.get("__preamble__") {
+        for line in preamble {
+            if let Some(s) = line.as_str() {
+                out.push_str(s);
+                out.push_str("\r\n");
+            }
+        }
+    }
+
     for (section, section_val) in root {
-        if section == "__header__" {
+        if section == "__header__" || section == "__preamble__" {
             continue;
         }
         out.push_str("\r\n");
@@ -435,12 +482,27 @@ pub fn serialize(value: &Value) -> Result<String> {
             .as_object()
             .with_context(|| format!("REG section '{section}' must be an object or null"))?;
 
+        // Section header — emit with optional Wine mtime suffix
         out.push('[');
         out.push_str(section);
         out.push(']');
+        if let Some(mtime) = props.get("__mtime__").and_then(Value::as_str) {
+            out.push(' ');
+            out.push_str(mtime);
+        }
         out.push_str("\r\n");
 
+        // Emit Wine #time= line if present
+        if let Some(time) = props.get("__time__").and_then(Value::as_str) {
+            out.push_str("#time=");
+            out.push_str(time);
+            out.push_str("\r\n");
+        }
+
         for (name, entry) in props {
+            if name == "__mtime__" || name == "__time__" {
+                continue;
+            }
             if entry.is_null() {
                 // Value deletion
                 out.push('-');
@@ -1090,6 +1152,43 @@ mod tests {
             &output[..60.min(output.len())]
         );
         assert!(!output.contains("__header__"), "internal key leaked");
+    }
+
+    // ── Wine metadata preservation ────────────────────────────────────────────
+
+    #[test]
+    fn wine_preamble_preserved_on_round_trip() {
+        let reg = "WINE REGISTRY Version 2\r\n\
+                   ;; All keys relative to REGISTRY\\\\User\\\\S-1-5\r\n\
+                   \r\n\
+                   #arch=win64\r\n\
+                   \r\n\
+                   [HKEY_CURRENT_USER\\Software\\Wine]\r\n\
+                   #time=1dcba208437b3be\r\n\
+                   \"UseGLSL\"=\"enabled\"\r\n";
+        let v = parse(reg).unwrap();
+        let s = serialize(&v).unwrap();
+        assert!(s.contains("#arch=win64"), "preamble #arch missing: {s}");
+        assert!(s.contains(";; All keys"), "preamble ;; comment missing: {s}");
+        assert!(s.contains("#time=1dcba208437b3be"), "#time missing: {s}");
+        assert!(!s.contains("__preamble__"), "internal key leaked");
+        assert!(!s.contains("__time__"), "internal key leaked");
+    }
+
+    #[test]
+    fn wine_section_mtime_preserved_on_round_trip() {
+        let reg = "WINE REGISTRY Version 2\r\n\r\n\
+                   [HKEY_CURRENT_USER\\Console] 1774202272\r\n\
+                   #time=1dcba25671a37f2\r\n\
+                   \"ColorTable00\"=dword:00000000\r\n";
+        let v = parse(reg).unwrap();
+        let s = serialize(&v).unwrap();
+        assert!(
+            s.contains("[HKEY_CURRENT_USER\\Console] 1774202272"),
+            "section mtime missing: {s}"
+        );
+        assert!(s.contains("#time=1dcba25671a37f2"), "#time missing: {s}");
+        assert!(!s.contains("__mtime__"), "internal key leaked");
     }
 
     // ── Wine-specific real-world scenarios ────────────────────────────────────

@@ -178,6 +178,14 @@ fn run_merge(args: MergeArgs) -> Result<()> {
     // Strip internal metadata keys from patch so they don't overwrite the existing file's metadata.
     if let Some(obj) = patch_val.as_object_mut() {
         obj.remove("__header__");
+        obj.remove("__preamble__");
+        // Strip __mtime__ and __time__ from each section in the patch
+        for section_val in obj.values_mut() {
+            if let Some(section) = section_val.as_object_mut() {
+                section.remove("__mtime__");
+                section.remove("__time__");
+            }
+        }
     }
 
     if patch_val.is_null() {
