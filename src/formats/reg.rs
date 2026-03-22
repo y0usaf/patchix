@@ -450,6 +450,7 @@ pub fn serialize(value: &Value) -> Result<String> {
         .get("__header__")
         .and_then(Value::as_str)
         .unwrap_or("Windows Registry Editor Version 5.00");
+    let wine_format = header == "WINE REGISTRY Version 2";
     let mut out = format!("{header}\r\n");
 
     // Emit preamble lines (comments/metadata before first section)
@@ -468,11 +469,20 @@ pub fn serialize(value: &Value) -> Result<String> {
         }
         out.push_str("\r\n");
 
+        // Wine format uses short paths (without HKEY_CURRENT_USER\ prefix)
+        let section_name = if wine_format {
+            section
+                .strip_prefix("HKEY_CURRENT_USER\\")
+                .unwrap_or(section)
+        } else {
+            section.as_str()
+        };
+
         if section_val.is_null() {
             // Key deletion
             out.push('[');
             out.push('-');
-            out.push_str(section);
+            out.push_str(section_name);
             out.push(']');
             out.push_str("\r\n");
             continue;
@@ -484,7 +494,7 @@ pub fn serialize(value: &Value) -> Result<String> {
 
         // Section header — emit with optional Wine mtime suffix
         out.push('[');
-        out.push_str(section);
+        out.push_str(section_name);
         out.push(']');
         if let Some(mtime) = props.get("__mtime__").and_then(Value::as_str) {
             out.push(' ');
@@ -1183,8 +1193,9 @@ mod tests {
                    \"ColorTable00\"=dword:00000000\r\n";
         let v = parse(reg).unwrap();
         let s = serialize(&v).unwrap();
+        // Wine format strips HKEY_CURRENT_USER\ prefix on output
         assert!(
-            s.contains("[HKEY_CURRENT_USER\\Console] 1774202272"),
+            s.contains("[Console] 1774202272"),
             "section mtime missing: {s}"
         );
         assert!(s.contains("#time=1dcba25671a37f2"), "#time missing: {s}");
