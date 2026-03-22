@@ -48,6 +48,32 @@ fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{FEFF}').unwrap_or(s)
 }
 
+/// Normalize a registry section key to always have a full hive prefix.
+///
+/// Wine's `user.reg` omits `HKEY_CURRENT_USER\\` from section headers,
+/// writing e.g. `[Software\\Foo]` instead of `[HKEY_CURRENT_USER\\Software\\Foo]`.
+/// Normalizing ensures patch keys (which use the full path) match parsed keys.
+fn normalize_section_key(key: &str) -> String {
+    const HIVE_PREFIXES: &[&str] = &[
+        "HKEY_CURRENT_USER",
+        "HKEY_LOCAL_MACHINE",
+        "HKEY_CLASSES_ROOT",
+        "HKEY_USERS",
+        "HKEY_CURRENT_CONFIG",
+        // Common abbreviations — treat as already-prefixed
+        "HKCU",
+        "HKLM",
+        "HKCR",
+        "HKU",
+        "HKCC",
+    ];
+    if HIVE_PREFIXES.iter().any(|h| key.starts_with(h)) {
+        key.to_string()
+    } else {
+        format!("HKEY_CURRENT_USER\\{key}")
+    }
+}
+
 // ── parse ─────────────────────────────────────────────────────────────────────
 
 pub fn parse(input: &str) -> Result<Value> {
@@ -137,11 +163,11 @@ pub fn parse(input: &str) -> Result<Value> {
                 let inner = &trimmed[1..close];
                 if inner.starts_with('-') {
                     // Key deletion marker — store as null
-                    let key = inner[1..].to_string();
+                    let key = normalize_section_key(&inner[1..]);
                     root.insert(key, Value::Null);
                     current_key = None;
                 } else {
-                    let key = inner.to_string();
+                    let key = normalize_section_key(inner);
                     root.entry(key.clone())
                         .or_insert_with(|| Value::Object(Map::new()));
                     current_key = Some(key);
