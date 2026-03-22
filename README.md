@@ -41,6 +41,16 @@ inputs.patchix.inputs.nixpkgs.follows = "nixpkgs";
         colors-dark = { alpha = 0.85; };
       };
     };
+
+    ".wine/user.reg" = {
+      format = "reg";
+      value = {
+        "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D" = {
+          "UseGLSL" = { type = "sz"; value = "enabled"; };
+          "VideoMemorySize" = { type = "dword"; value = 512; };
+        };
+      };
+    };
   };
 }
 ```
@@ -54,7 +64,7 @@ activation.
 
 | Option                 | Default      |                                                                       |
 | ---------------------- | ------------ | --------------------------------------------------------------------- |
-| `format`               | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"`                                    |
+| `format`               | _(required)_ | `"json"` `"toml"` `"yaml"` `"ini"` `"reg"`                            |
 | `value`                | `{}`         | Patch content as Nix attrset                                          |
 | `clobber`              | `true`       | `true`: overwrite existing values. `false`: only fill in missing keys |
 | `defaultArrayStrategy` | `"replace"`  | `"replace"` `"append"` `"prepend"` `"union"`                          |
@@ -79,12 +89,29 @@ Per-path: `arrayStrategies."editor.formatters" = "append";`
 ## Formats
 
 Auto-detected from file extension. Supported: `json`, `toml`, `yaml`/`yml`,
-`ini`/`conf`/`cfg`.
+`ini`/`conf`/`cfg`, `reg`.
 
 TOML datetimes round-trip as strings. INI sections map to top-level keys;
 sectionless (global) keys are grouped under `__global__`. YAML uses implicit
 typing: unquoted `yes`/`no`/`true`/`false` become booleans and bare numbers
 become numeric — quote values to preserve them as strings.
+
+Registry patches use typed values because `.reg` entries are not plain JSON
+scalars:
+
+```nix
+{
+  "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D" = {
+    "UseGLSL" = { type = "sz"; value = "enabled"; };
+    "VideoMemorySize" = { type = "dword"; value = 512; };
+    "BinaryBlob" = { type = "hex"; value = "01,02,ff"; };
+    "(default)" = { type = "sz"; value = "default text"; };
+    "DeprecatedValue" = null;
+  };
+
+  "HKEY_CURRENT_USER\\Software\\Wine\\ObsoleteKey" = null;
+}
+```
 
 ## CLI
 
@@ -95,6 +122,7 @@ patchix merge -e config.json -p patch.json --array-strategy 'plugins=append'
 patchix merge -e config.toml -p patch.toml -o merged.toml
 patchix merge -e config.yml -p patch.yml --default-array append
 patchix merge -e config -p patch.json --format json
+patchix merge -e user.reg -p patch.json --format reg --patch-format json
 ```
 
 ## License

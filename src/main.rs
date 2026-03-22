@@ -11,7 +11,11 @@ use formats::Format;
 use merge::{ArrayStrategy, MergeConfig};
 
 #[derive(Parser)]
-#[command(name = "patchix", about = "Declarative config file patcher for Nix", version)]
+#[command(
+    name = "patchix",
+    about = "Declarative config file patcher for Nix",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -20,43 +24,51 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     /// Merge a patch into an existing config file
-    Merge {
-        /// Path to the existing config file (will be created if missing)
-        #[arg(short, long)]
-        existing: PathBuf,
-
-        /// Path to the patch file (from Nix store)
-        #[arg(short, long)]
-        patch: PathBuf,
-
-        /// Output path (defaults to --existing, overwriting in place)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Config format (auto-detected from extension if omitted)
-        #[arg(short, long)]
-        format: Option<FormatArg>,
-
-        /// Default array merge strategy
-        #[arg(long, default_value = "replace")]
-        default_array: ArrayStrategyArg,
-
-        /// Per-path array strategy overrides (e.g. 'plugins=append')
-        #[arg(long = "array-strategy", value_parser = parse_path_strategy)]
-        array_strategies: Vec<(String, ArrayStrategy)>,
-
-        /// Don't overwrite existing values — only fill in missing keys. Null patch values are ignored (not deleted)
-        #[arg(long)]
-        no_clobber: bool,
-    },
+    Merge(MergeArgs),
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(clap::Args)]
+struct MergeArgs {
+    /// Path to the existing config file (will be created if missing)
+    #[arg(short, long)]
+    existing: PathBuf,
+
+    /// Path to the patch file (from Nix store)
+    #[arg(short, long)]
+    patch: PathBuf,
+
+    /// Output path (defaults to --existing, overwriting in place)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Config format (auto-detected from extension if omitted)
+    #[arg(short, long)]
+    format: Option<FormatArg>,
+
+    /// Patch file format (defaults to --format / detected existing format)
+    #[arg(long)]
+    patch_format: Option<FormatArg>,
+
+    /// Default array merge strategy
+    #[arg(long, default_value = "replace")]
+    default_array: ArrayStrategyArg,
+
+    /// Per-path array strategy overrides (e.g. 'plugins=append')
+    #[arg(long = "array-strategy", value_parser = parse_path_strategy)]
+    array_strategies: Vec<(String, ArrayStrategy)>,
+
+    /// Don't overwrite existing values — only fill in missing keys. Null patch values are ignored (not deleted)
+    #[arg(long)]
+    no_clobber: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 enum FormatArg {
     Json,
     Toml,
     Yaml,
     Ini,
+    Reg,
 }
 
 impl From<FormatArg> for Format {
@@ -66,6 +78,7 @@ impl From<FormatArg> for Format {
             FormatArg::Toml => Format::Toml,
             FormatArg::Yaml => Format::Yaml,
             FormatArg::Ini => Format::Ini,
+            FormatArg::Reg => Format::Reg,
         }
     }
 }
@@ -93,14 +106,17 @@ fn parse_path_strategy(s: &str) -> Result<(String, ArrayStrategy), String> {
     let (path, strategy) = s
         .split_once('=')
         .ok_or_else(|| format!("expected 'path=strategy', got '{s}'"))?;
-    let strategy_arg = ArrayStrategyArg::from_str(strategy, true)
-        .map_err(|_| {
-            let valid: Vec<String> = ArrayStrategyArg::value_variants()
-                .iter()
-                .filter_map(|v| v.to_possible_value().map(|pv| pv.get_name().to_string()))
-                .collect();
-            format!("unknown strategy '{}'; valid values: {}", strategy, valid.join(", "))
-        })?;
+    let strategy_arg = ArrayStrategyArg::from_str(strategy, true).map_err(|_| {
+        let valid: Vec<String> = ArrayStrategyArg::value_variants()
+            .iter()
+            .filter_map(|v| v.to_possible_value().map(|pv| pv.get_name().to_string()))
+            .collect();
+        format!(
+            "unknown strategy '{}'; valid values: {}",
+            strategy,
+            valid.join(", ")
+        )
+    })?;
     Ok((path.to_string(), strategy_arg.into()))
 }
 
@@ -110,21 +126,28 @@ fn detect_format(path: &Path) -> Result<Format> {
         Some("toml") => Ok(Format::Toml),
         Some("yaml" | "yml") => Ok(Format::Yaml),
         Some("ini" | "conf" | "cfg") => Ok(Format::Ini),
+        Some("reg") => Ok(Format::Reg),
         Some(ext) => anyhow::bail!("unknown file extension '.{ext}', use --format to specify"),
         None => anyhow::bail!("no file extension, use --format to specify"),
     }
 }
 
-fn run_merge(
-    existing: PathBuf,
-    patch: PathBuf,
-    output: Option<PathBuf>,
-    format: Option<FormatArg>,
-    default_array: ArrayStrategyArg,
-    array_strategies: Vec<(String, ArrayStrategy)>,
-    no_clobber: bool,
-) -> Result<()> {
-    let format = format.map(Format::from).map_or_else(|| detect_format(&existing), Ok)?;
+fn run_merge(args: MergeArgs) -> Result<()> {
+    let MergeArgs {
+        existing,
+        patch,
+        output,
+        format,
+        patch_format,
+        default_array,
+        array_strategies,
+        no_clobber,
+    } = args;
+
+    let format = format
+        .map(Format::from)
+        .map_or_else(|| detect_format(&existing), Ok)?;
+    let patch_format = patch_format.map(Format::from).unwrap_or(format);
 
     let config = MergeConfig {
         default_array: default_array.into(),
@@ -139,8 +162,8 @@ fn run_merge(
         Err(e) => return Err(e).with_context(|| format!("reading {}", existing.display())),
     };
 
-    let patch_content = std::fs::read_to_string(&patch)
-        .with_context(|| format!("reading {}", patch.display()))?;
+    let patch_content =
+        std::fs::read_to_string(&patch).with_context(|| format!("reading {}", patch.display()))?;
 
     let existing_val = if existing_content.is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
@@ -149,7 +172,7 @@ fn run_merge(
             .with_context(|| format!("parsing {}", existing.display()))?
     };
 
-    let patch_val = formats::parse(&patch_content, format)
+    let patch_val = formats::parse(&patch_content, patch_format)
         .with_context(|| format!("parsing {}", patch.display()))?;
 
     if patch_val.is_null() {
@@ -180,8 +203,13 @@ fn run_merge(
     }
     tmp.write_all(result.as_bytes())
         .context("writing temp file")?;
-    tmp.persist(output_path)
-        .map_err(|e| anyhow::anyhow!("renaming temp file to {}: {}", output_path.display(), e.error))?;
+    tmp.persist(output_path).map_err(|e| {
+        anyhow::anyhow!(
+            "renaming temp file to {}: {}",
+            output_path.display(),
+            e.error
+        )
+    })?;
 
     Ok(())
 }
@@ -190,14 +218,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Merge {
-            existing,
-            patch,
-            output,
-            format,
-            default_array,
-            array_strategies,
-            no_clobber,
-        } => run_merge(existing, patch, output, format, default_array, array_strategies, no_clobber),
+        Command::Merge(args) => run_merge(args),
     }
 }

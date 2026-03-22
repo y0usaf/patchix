@@ -17,16 +17,16 @@ fn toml_to_json(val: ::toml::Value) -> anyhow::Result<Value> {
     Ok(match val {
         ::toml::Value::String(s) => Value::String(s),
         ::toml::Value::Integer(i) => Value::Number(i.into()),
-        ::toml::Value::Float(f) => {
-            serde_json::Number::from_f64(f)
-                .map(Value::Number)
-                .ok_or_else(|| anyhow::anyhow!("TOML float is non-finite (NaN or Infinity): {f}"))?
-        }
+        ::toml::Value::Float(f) => serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .ok_or_else(|| anyhow::anyhow!("TOML float is non-finite (NaN or Infinity): {f}"))?,
         ::toml::Value::Boolean(b) => Value::Bool(b),
         ::toml::Value::Datetime(dt) => Value::String(dt.to_string()),
-        ::toml::Value::Array(arr) => {
-            Value::Array(arr.into_iter().map(toml_to_json).collect::<anyhow::Result<_>>()?)
-        }
+        ::toml::Value::Array(arr) => Value::Array(
+            arr.into_iter()
+                .map(toml_to_json)
+                .collect::<anyhow::Result<_>>()?,
+        ),
         ::toml::Value::Table(tbl) => {
             let map = tbl
                 .into_iter()

@@ -203,9 +203,7 @@ mod tests {
         });
         let config = MergeConfig {
             default_array: ArrayStrategy::Replace,
-            path_strategies: HashMap::from([
-                ("plugins".to_string(), ArrayStrategy::Append),
-            ]),
+            path_strategies: HashMap::from([("plugins".to_string(), ArrayStrategy::Append)]),
             clobber: true,
         };
         let result = merge(existing, patch, &config, "");
@@ -224,9 +222,10 @@ mod tests {
         let patch = json!({"editor": {"formatters": ["prettier"]}});
         let config = MergeConfig {
             default_array: ArrayStrategy::Replace,
-            path_strategies: HashMap::from([
-                ("editor.formatters".to_string(), ArrayStrategy::Append),
-            ]),
+            path_strategies: HashMap::from([(
+                "editor.formatters".to_string(),
+                ArrayStrategy::Append,
+            )]),
             clobber: true,
         };
         let result = merge(existing, patch, &config, "");
@@ -331,11 +330,14 @@ mod tests {
             "model": "opus"
         });
         let result = merge(existing, patch, &no_clobber_config(), "");
-        assert_eq!(result, json!({
-            "enabledPlugins": {"audio-notify": false, "gh": true, "new-plugin": true},
-            "runtimeKey": "preserved",
-            "model": "opus"
-        }));
+        assert_eq!(
+            result,
+            json!({
+                "enabledPlugins": {"audio-notify": false, "gh": true, "new-plugin": true},
+                "runtimeKey": "preserved",
+                "model": "opus"
+            })
+        );
     }
 
     #[test]

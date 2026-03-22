@@ -33,17 +33,22 @@
     attrs
     ;
 
-  # Generate the patch file in the Nix store
+  # Generate the patch file in the Nix store. Registry patches are emitted as
+  # JSON and parsed with --patch-format json because expressing .reg directly in
+  # Nix is awkward and lossy.
   mkPatchFile = name: patchCfg: let
-    ext = patchCfg.format;
+    patchFormat =
+      if patchCfg.format == "reg"
+      then "json"
+      else patchCfg.format;
     content =
-      if patchCfg.format == "json"
+      if patchFormat == "json"
       then builtins.toJSON patchCfg.value
-      else if patchCfg.format == "toml"
+      else if patchFormat == "toml"
       then (pkgs.formats.toml {}).generate "patch-${name}" patchCfg.value
-      else if patchCfg.format == "yaml"
+      else if patchFormat == "yaml"
       then (pkgs.formats.yaml {}).generate "patch-${name}" patchCfg.value
-      else if patchCfg.format == "ini"
+      else if patchFormat == "ini"
       then
         lib.generators.toINIWithGlobalSection {} {
           # map __global__
@@ -52,14 +57,17 @@
           sections = builtins.removeAttrs patchCfg.value ["__global__"];
         }
       else builtins.throw "Unsupported patch format: ${patchCfg.format}";
-  in
-    if builtins.isString content
-    then pkgs.writeText "patchix-${name}.${ext}" content
-    else content;
+  in {
+    format = patchFormat;
+    path =
+      if builtins.isString content
+      then pkgs.writeText "patchix-${name}.${patchFormat}" content
+      else content;
+  };
 
   # Generate a patchix CLI invocation for a single patch
   mkPatchInvocation = homeDir: target: patchCfg: let
-    patchFile = mkPatchFile target patchCfg;
+    patchSpec = mkPatchFile target patchCfg;
     fullTarget = "${homeDir}/${target}";
     strategyArgs = concatMapStringsSep " " (
       path: "--array-strategy ${escapeShellArg "${path}=${patchCfg.arrayStrategies.${path}}"}"
@@ -67,8 +75,9 @@
   in ''
     ${getExe patchix} merge \
       --existing "${fullTarget}" \
-      --patch "${patchFile}" \
+      --patch "${patchSpec.path}" \
       --format ${escapeShellArg patchCfg.format} \
+      --patch-format ${escapeShellArg patchSpec.format} \
       --default-array ${escapeShellArg patchCfg.defaultArrayStrategy} \
       ${optionalString (!patchCfg.clobber) "--no-clobber"} \
       ${strategyArgs}
@@ -112,6 +121,7 @@ in {
                     "toml"
                     "yaml"
                     "ini"
+                    "reg"
                   ];
                   description = "Config file format.";
                 };

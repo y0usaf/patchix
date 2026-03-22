@@ -19,7 +19,15 @@ fn json_basic_merge() {
     fs::write(&patch, r#"{"b": 99, "c": 3}"#).unwrap();
 
     let status = patchix()
-        .args(["merge", "-e", s(&existing), "-p", s(&patch), "-o", s(&output)])
+        .args([
+            "merge",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "-o",
+            s(&output),
+        ])
         .status()
         .unwrap();
     assert!(status.success());
@@ -83,9 +91,9 @@ fn json_no_clobber() {
 
     let result: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&existing).unwrap()).unwrap();
-    assert_eq!(result["a"], 1);   // preserved
-    assert_eq!(result["b"], 2);   // preserved
-    assert_eq!(result["c"], 3);   // new key filled in
+    assert_eq!(result["a"], 1); // preserved
+    assert_eq!(result["b"], 2); // preserved
+    assert_eq!(result["c"], 3); // new key filled in
 }
 
 #[test]
@@ -142,9 +150,12 @@ fn json_array_append() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--array-strategy", "plugins=append",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--array-strategy",
+            "plugins=append",
         ])
         .status()
         .unwrap();
@@ -227,7 +238,15 @@ fn format_flag_overrides_extension() {
     fs::write(&patch, r#"{"b": 2}"#).unwrap();
 
     let status = patchix()
-        .args(["merge", "-e", s(&existing), "-p", s(&patch), "--format", "json"])
+        .args([
+            "merge",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--format",
+            "json",
+        ])
         .status()
         .unwrap();
     assert!(status.success());
@@ -252,9 +271,12 @@ fn json_default_array_append() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--default-array", "append",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--default-array",
+            "append",
         ])
         .status()
         .unwrap();
@@ -277,9 +299,12 @@ fn json_default_array_prepend() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--default-array", "prepend",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--default-array",
+            "prepend",
         ])
         .status()
         .unwrap();
@@ -302,9 +327,12 @@ fn json_default_array_union() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--default-array", "union",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--default-array",
+            "union",
         ])
         .status()
         .unwrap();
@@ -327,9 +355,12 @@ fn json_nested_path_array_strategy() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--array-strategy", "editor.formatters=append",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--array-strategy",
+            "editor.formatters=append",
         ])
         .status()
         .unwrap();
@@ -337,7 +368,10 @@ fn json_nested_path_array_strategy() {
 
     let result: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&existing).unwrap()).unwrap();
-    assert_eq!(result["editor"]["formatters"], serde_json::json!(["rustfmt", "prettier"]));
+    assert_eq!(
+        result["editor"]["formatters"],
+        serde_json::json!(["rustfmt", "prettier"])
+    );
 }
 
 #[test]
@@ -352,10 +386,14 @@ fn json_multiple_array_strategies() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--array-strategy", "plugins=append",
-            "--array-strategy", "keybinds=prepend",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--array-strategy",
+            "plugins=append",
+            "--array-strategy",
+            "keybinds=prepend",
         ])
         .status()
         .unwrap();
@@ -407,8 +445,8 @@ fn toml_no_clobber() {
 
     let content = fs::read_to_string(&existing).unwrap();
     assert!(content.contains("name = \"old\"")); // preserved
-    assert!(content.contains("count = 1"));       // preserved
-    assert!(content.contains("extra = true"));    // new key added
+    assert!(content.contains("count = 1")); // preserved
+    assert!(content.contains("extra = true")); // new key added
 }
 
 #[test]
@@ -508,7 +546,7 @@ fn yaml_no_clobber() {
 
     let content = fs::read_to_string(&existing).unwrap();
     assert!(content.contains("name: old")); // preserved
-    assert!(content.contains("count: 1"));  // preserved
+    assert!(content.contains("count: 1")); // preserved
     assert!(content.contains("extra: true")); // new key added
 }
 
@@ -565,7 +603,10 @@ fn yaml_no_document_marker_in_output() {
     assert!(status.success());
 
     let content = fs::read_to_string(&existing).unwrap();
-    assert!(!content.starts_with("---"), "Output should not start with YAML --- marker, got: {content}");
+    assert!(
+        !content.starts_with("---"),
+        "Output should not start with YAML --- marker, got: {content}"
+    );
 }
 
 #[test]
@@ -585,7 +626,10 @@ fn yaml_input_with_document_marker() {
     assert!(status.success());
 
     let content = fs::read_to_string(&existing).unwrap();
-    assert!(!content.starts_with("---"), "Output should not have --- marker");
+    assert!(
+        !content.starts_with("---"),
+        "Output should not have --- marker"
+    );
     assert!(content.contains("a: 1"));
     assert!(content.contains("b: 2"));
     assert!(content.contains("c: 3"));
@@ -605,9 +649,12 @@ fn yaml_array_append() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--default-array", "append",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--default-array",
+            "append",
         ])
         .status()
         .unwrap();
@@ -630,9 +677,12 @@ fn yaml_array_union() {
     let status = patchix()
         .args([
             "merge",
-            "-e", s(&existing),
-            "-p", s(&patch),
-            "--default-array", "union",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--default-array",
+            "union",
         ])
         .status()
         .unwrap();
@@ -739,6 +789,124 @@ fn ini_error_malformed() {
         .unwrap();
     // Should fail gracefully
     assert!(!status.success());
+}
+
+// --- REG ---
+
+#[test]
+fn reg_basic_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("user.reg");
+    let patch = dir.path().join("patch.reg");
+
+    fs::write(
+        &existing,
+        "Windows Registry Editor Version 5.00\r\n\r\n\
+         [HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]\r\n\
+         \"UseGLSL\"=\"disabled\"\r\n",
+    )
+    .unwrap();
+    fs::write(
+        &patch,
+        "Windows Registry Editor Version 5.00\r\n\r\n\
+         [HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]\r\n\
+         \"UseGLSL\"=\"enabled\"\r\n\
+         \"VideoMemorySize\"=dword:00000200\r\n",
+    )
+    .unwrap();
+
+    let status = patchix()
+        .args(["merge", "-e", s(&existing), "-p", s(&patch)])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let content = fs::read_to_string(&existing).unwrap();
+    assert!(content.contains("Windows Registry Editor Version 5.00"));
+    assert!(content.contains("\"UseGLSL\"=\"enabled\""));
+    assert!(content.contains("\"VideoMemorySize\"=dword:00000200"));
+}
+
+#[test]
+fn reg_no_clobber_preserves_existing_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("user.reg");
+    let patch = dir.path().join("patch.reg");
+
+    fs::write(
+        &existing,
+        "Windows Registry Editor Version 5.00\r\n\r\n\
+         [HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]\r\n\
+         \"UseGLSL\"=\"disabled\"\r\n",
+    )
+    .unwrap();
+    fs::write(
+        &patch,
+        "Windows Registry Editor Version 5.00\r\n\r\n\
+         [HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]\r\n\
+         \"UseGLSL\"=\"enabled\"\r\n\
+         \"StrictDrawOrdering\"=\"enabled\"\r\n",
+    )
+    .unwrap();
+
+    let status = patchix()
+        .args(["merge", "-e", s(&existing), "-p", s(&patch), "--no-clobber"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let content = fs::read_to_string(&existing).unwrap();
+    assert!(content.contains("\"UseGLSL\"=\"disabled\""));
+    assert!(content.contains("\"StrictDrawOrdering\"=\"enabled\""));
+}
+
+#[test]
+fn reg_accepts_json_patch_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("user.reg");
+    let patch = dir.path().join("patch.json");
+
+    fs::write(
+        &existing,
+        "Windows Registry Editor Version 5.00\r\n\r\n\
+         [HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]\r\n\
+         \"UseGLSL\"=\"disabled\"\r\n\r\n\
+         [HKEY_CURRENT_USER\\Software\\Wine\\ObsoleteKey]\r\n\
+         \"Keep\"=\"old\"\r\n",
+    )
+    .unwrap();
+    fs::write(
+        &patch,
+        r#"{
+  "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D": {
+    "UseGLSL": {"type": "sz", "value": "enabled"},
+    "VideoMemorySize": {"type": "dword", "value": 512}
+  },
+  "HKEY_CURRENT_USER\\Software\\Wine\\ObsoleteKey": null
+}"#,
+    )
+    .unwrap();
+
+    let status = patchix()
+        .args([
+            "merge",
+            "-e",
+            s(&existing),
+            "-p",
+            s(&patch),
+            "--format",
+            "reg",
+            "--patch-format",
+            "json",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let content = fs::read_to_string(&existing).unwrap();
+    assert!(content.contains("\"UseGLSL\"=\"enabled\""));
+    assert!(content.contains("\"VideoMemorySize\"=dword:00000200"));
+    assert!(!content.contains("ObsoleteKey"));
 }
 
 fn s(p: &Path) -> &str {

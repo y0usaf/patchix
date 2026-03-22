@@ -27,9 +27,7 @@ pub fn parse(input: &str) -> Result<Value> {
 }
 
 pub fn serialize(value: &Value) -> Result<String> {
-    let obj = value
-        .as_object()
-        .context("INI root must be an object")?;
+    let obj = value.as_object().context("INI root must be an object")?;
 
     let mut ini = Ini::new();
 

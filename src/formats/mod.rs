@@ -1,5 +1,6 @@
 mod ini;
 mod json;
+mod reg;
 mod toml;
 mod yaml;
 
@@ -12,6 +13,7 @@ pub enum Format {
     Toml,
     Yaml,
     Ini,
+    Reg,
 }
 
 pub fn parse(input: &str, format: Format) -> Result<Value> {
@@ -20,6 +22,7 @@ pub fn parse(input: &str, format: Format) -> Result<Value> {
         Format::Toml => toml::parse(input),
         Format::Yaml => yaml::parse(input),
         Format::Ini => ini::parse(input),
+        Format::Reg => reg::parse(input),
     }
 }
 
@@ -29,5 +32,6 @@ pub fn serialize(value: &Value, format: Format) -> Result<String> {
         Format::Toml => toml::serialize(value),
         Format::Yaml => yaml::serialize(value),
         Format::Ini => ini::serialize(value),
+        Format::Reg => reg::serialize(value),
     }
 }
