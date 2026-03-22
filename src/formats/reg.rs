@@ -98,6 +98,11 @@ pub fn parse(input: &str) -> Result<Value> {
     }
 
     let mut root: Map<String, Value> = Map::new();
+    // Store the original header so serialize can round-trip it exactly.
+    root.insert(
+        "__header__".to_string(),
+        Value::String(header.to_string()),
+    );
     let mut current_key: Option<String> = None;
 
     // Collect logical lines (backslash-continuation)
@@ -404,9 +409,16 @@ fn parse_hex_bytes(hex: &str) -> Result<Vec<u8>> {
 pub fn serialize(value: &Value) -> Result<String> {
     let root = value.as_object().context("REG root must be an object")?;
 
-    let mut out = String::from("Windows Registry Editor Version 5.00\r\n");
+    let header = root
+        .get("__header__")
+        .and_then(Value::as_str)
+        .unwrap_or("Windows Registry Editor Version 5.00");
+    let mut out = format!("{header}\r\n");
 
     for (section, section_val) in root {
+        if section == "__header__" {
+            continue;
+        }
         out.push_str("\r\n");
 
         if section_val.is_null() {
@@ -1024,6 +1036,60 @@ mod tests {
         let reg = "Windows Registry Editor Version 5.00\r\n\r\n\
                    [-HKCU\\Gone]\r\n";
         round_trip(reg).unwrap();
+    }
+
+    // ── header preservation ───────────────────────────────────────────────────
+
+    #[test]
+    fn wine_registry_header_preserved_on_round_trip() {
+        let reg = "WINE REGISTRY Version 2\r\n\r\n\
+                   [HKEY_CURRENT_USER\\Software\\Wine]\r\n\
+                   \"UseGLSL\"=\"enabled\"\r\n";
+        let v = parse(reg).unwrap();
+        let s = serialize(&v).unwrap();
+        assert!(
+            s.starts_with("WINE REGISTRY Version 2\r\n"),
+            "header not preserved, got: {}",
+            &s[..50.min(s.len())]
+        );
+        assert!(!s.contains("__header__"), "internal key leaked into output");
+    }
+
+    #[test]
+    fn wine_header_preserved_after_merge() {
+        use crate::merge::{merge, ArrayStrategy, MergeConfig};
+        use std::collections::HashMap;
+
+        let existing_reg = "WINE REGISTRY Version 2\r\n\r\n\
+                            [HKEY_CURRENT_USER\\Software\\Wine]\r\n\
+                            \"UseGLSL\"=\"disabled\"\r\n";
+        let patch_reg = "Windows Registry Editor Version 5.00\r\n\r\n\
+                         [HKEY_CURRENT_USER\\Software\\Wine]\r\n\
+                         \"UseGLSL\"=\"enabled\"\r\n";
+
+        let existing_val = parse(existing_reg).unwrap();
+        let mut patch_val = parse(patch_reg).unwrap();
+        // Strip __header__ from patch (as main.rs does) so existing header wins
+        if let Some(obj) = patch_val.as_object_mut() {
+            obj.remove("__header__");
+        }
+
+        let config = MergeConfig {
+            default_array: ArrayStrategy::Replace,
+            path_strategies: HashMap::new(),
+            clobber: true,
+        };
+
+        let merged = merge(existing_val, patch_val, &config, "");
+        let output = serialize(&merged).unwrap();
+
+        // Existing file's header wins (it's in the base, not the patch)
+        assert!(
+            output.starts_with("WINE REGISTRY Version 2\r\n"),
+            "Wine header not preserved after merge, got: {}",
+            &output[..60.min(output.len())]
+        );
+        assert!(!output.contains("__header__"), "internal key leaked");
     }
 
     // ── Wine-specific real-world scenarios ────────────────────────────────────

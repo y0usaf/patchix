@@ -172,8 +172,13 @@ fn run_merge(args: MergeArgs) -> Result<()> {
             .with_context(|| format!("parsing {}", existing.display()))?
     };
 
-    let patch_val = formats::parse(&patch_content, patch_format)
+    let mut patch_val = formats::parse(&patch_content, patch_format)
         .with_context(|| format!("parsing {}", patch.display()))?;
+
+    // Strip internal metadata keys from patch so they don't overwrite the existing file's metadata.
+    if let Some(obj) = patch_val.as_object_mut() {
+        obj.remove("__header__");
+    }
 
     if patch_val.is_null() {
         anyhow::bail!(
