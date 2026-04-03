@@ -44,6 +44,14 @@ fn json_to_toml(val: &Value) -> Result<::toml::Value> {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 ::toml::Value::Integer(i)
+            } else if n.as_u64().is_some() {
+                // u64 that doesn't fit in i64: TOML only supports signed 64-bit integers,
+                // and silently converting to f64 would lose precision for large values.
+                anyhow::bail!(
+                    "TOML integer out of range: {} exceeds i64::MAX ({}). \
+                     TOML only supports signed 64-bit integers.",
+                    n, i64::MAX
+                )
             } else if let Some(f) = n.as_f64() {
                 ::toml::Value::Float(f)
             } else {
