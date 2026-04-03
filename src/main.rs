@@ -175,15 +175,25 @@ fn run_merge(args: MergeArgs) -> Result<()> {
     let mut patch_val = formats::parse(&patch_content, patch_format)
         .with_context(|| format!("parsing {}", patch.display()))?;
 
-    // Strip internal metadata keys from patch so they don't overwrite the existing file's metadata.
-    if let Some(obj) = patch_val.as_object_mut() {
-        obj.remove("__header__");
-        obj.remove("__preamble__");
-        // Strip __mtime__ and __time__ from each section in the patch
-        for section_val in obj.values_mut() {
-            if let Some(section) = section_val.as_object_mut() {
-                section.remove("__mtime__");
-                section.remove("__time__");
+    // Strip internal metadata keys from REG patches — these are patchix internals
+    // that must not overwrite the existing file's header/preamble/timestamps.
+    // (For other formats these key names are valid user data and must not be touched.)
+    if patch_format == Format::Reg {
+        if let Some(obj) = patch_val.as_object_mut() {
+            obj.remove("__header__");
+            obj.remove("__preamble__");
+            for section_val in obj.values_mut() {
+                if let Some(section) = section_val.as_object_mut() {
+                    // Only strip __mtime__/__time__ when they are strings (internal
+                    // patchix metadata). Real registry values are objects with
+                    // {type, value} structure and must not be dropped.
+                    if matches!(section.get("__mtime__"), Some(v) if v.is_string()) {
+                        section.remove("__mtime__");
+                    }
+                    if matches!(section.get("__time__"), Some(v) if v.is_string()) {
+                        section.remove("__time__");
+                    }
+                }
             }
         }
     }
@@ -212,7 +222,10 @@ fn run_merge(args: MergeArgs) -> Result<()> {
         .with_context(|| format!("creating temp file in {}", parent.display()))?;
     // Preserve original file permissions so the atomic rename doesn't change access modes
     if let Ok(meta) = std::fs::metadata(output_path) {
-        let _ = std::fs::set_permissions(tmp.path(), meta.permissions());
+        if let Err(e) = std::fs::set_permissions(tmp.path(), meta.permissions()) {
+            eprintln!("patchix: warning: could not preserve file permissions on {}: {e}",
+                output_path.display());
+        }
     }
     tmp.write_all(result.as_bytes())
         .context("writing temp file")?;

@@ -7,7 +7,7 @@ mod yaml;
 use anyhow::Result;
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Format {
     Json,
     Toml,
