@@ -53,28 +53,59 @@ fn strip_bom(s: &str) -> &str {
 /// Wine's `user.reg` omits `HKEY_CURRENT_USER\\` from section headers,
 /// writing e.g. `[Software\\Foo]` instead of `[HKEY_CURRENT_USER\\Software\\Foo]`.
 /// Normalizing ensures patch keys (which use the full path) match parsed keys.
+/// Also expands abbreviations (HKCU, HKLM, etc.) to full hive names.
 fn normalize_section_key(key: &str) -> String {
+    // Fix 4: Expand common abbreviations to full hive names for consistent key matching
+    let key = match key.split_once('\\') {
+        Some(("HKCU", rest)) => format!("HKEY_CURRENT_USER\\{rest}"),
+        Some(("HKLM", rest)) => format!("HKEY_LOCAL_MACHINE\\{rest}"),
+        Some(("HKCR", rest)) => format!("HKEY_CLASSES_ROOT\\{rest}"),
+        Some(("HKU", rest))  => format!("HKEY_USERS\\{rest}"),
+        Some(("HKCC", rest)) => format!("HKEY_CURRENT_CONFIG\\{rest}"),
+        _ => key.to_string(),
+    };
+    // If the key starts with a known full hive prefix, return as-is.
+    // Otherwise, add HKEY_CURRENT_USER\ prefix (Wine short-path format).
     const HIVE_PREFIXES: &[&str] = &[
         "HKEY_CURRENT_USER",
         "HKEY_LOCAL_MACHINE",
         "HKEY_CLASSES_ROOT",
         "HKEY_USERS",
         "HKEY_CURRENT_CONFIG",
-        // Common abbreviations — treat as already-prefixed
-        "HKCU",
-        "HKLM",
-        "HKCR",
-        "HKU",
-        "HKCC",
     ];
-    if HIVE_PREFIXES.iter().any(|h| key.starts_with(h)) {
-        key.to_string()
+    if HIVE_PREFIXES.iter().any(|h| key == *h || key.starts_with(&format!("{h}\\"))) {
+        key
     } else {
         format!("HKEY_CURRENT_USER\\{key}")
     }
 }
 
 // ── parse ─────────────────────────────────────────────────────────────────────
+
+/// Fix 6: Free function for flushing a logical line into a section map.
+fn flush_logical(
+    logical: &mut String,
+    current_key: &Option<String>,
+    root: &mut Map<String, Value>,
+) -> Result<()> {
+    let trimmed = logical.trim().to_string();
+    // Fix 6: Use clear() instead of *logical = String::new()
+    logical.clear();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let key = match current_key {
+        Some(k) => k,
+        None => return Ok(()), // value line before any section header — skip
+    };
+    let section = root
+        .entry(key.clone())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let section_map = section
+        .as_object_mut()
+        .context("section must be an object")?;
+    parse_value_line(&trimmed, section_map)
+}
 
 pub fn parse(input: &str) -> Result<Value> {
     let input = strip_bom(input);
@@ -109,28 +140,6 @@ pub fn parse(input: &str) -> Result<Value> {
 
     // Collect logical lines (backslash-continuation)
     let mut logical = String::new();
-
-    let flush_logical = |logical: &mut String,
-                         current_key: &Option<String>,
-                         root: &mut Map<String, Value>|
-     -> Result<()> {
-        let trimmed = logical.trim().to_string();
-        *logical = String::new();
-        if trimmed.is_empty() {
-            return Ok(());
-        }
-        let key = match current_key {
-            Some(k) => k,
-            None => return Ok(()), // value line before any section header — skip
-        };
-        let section = root
-            .entry(key.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
-        let section_map = section
-            .as_object_mut()
-            .context("section must be an object")?;
-        parse_value_line(&trimmed, section_map)
-    };
 
     for raw_line in lines {
         // Strip inline comments only outside of quoted contexts — but .reg
@@ -217,8 +226,8 @@ pub fn parse(input: &str) -> Result<Value> {
                 while preamble.last() == Some(&Value::String(String::new())) {
                     preamble.pop();
                 }
-                root.insert("__preamble__".to_string(), Value::Array(preamble.clone()));
-                preamble.clear();
+                // Fix 7: Use std::mem::take instead of clone() + clear()
+                root.insert("__preamble__".to_string(), Value::Array(std::mem::take(&mut preamble)));
             }
             continue;
         }
@@ -305,6 +314,8 @@ fn extract_quoted(s: &str) -> Result<(String, &str)> {
             Some((_, '\\')) => match chars.next() {
                 Some((_, '\\')) => out.push('\\'),
                 Some((_, '"')) => out.push('"'),
+                // Fix 8: Handle \0 escape → NUL byte (Wine str(7) format)
+                Some((_, '0')) => out.push('\0'),
                 Some((_, c)) => {
                     out.push('\\');
                     out.push(c);
@@ -353,6 +364,8 @@ fn parse_data(data: &str) -> Result<Value> {
         // REG_EXPAND_SZ — NUL-terminated UTF-16LE
         let hex_data = hex_data.trim();
         let s = decode_utf16le_hex(hex_data).context("decoding REG_EXPAND_SZ (hex(2))")?;
+        // Fix 2: Strip trailing NUL terminator
+        let s = s.trim_end_matches('\0').to_string();
         return Ok(make_entry("expand_sz", Value::String(s)));
     }
 
@@ -378,7 +391,8 @@ fn parse_data(data: &str) -> Result<Value> {
             "hex" => "hex".to_string(),
             other => other.to_string(), // "hex(3)", "hex(4)", …
         };
-        return Ok(make_typed_entry(&tag, Value::String(hex_data.to_string())));
+        // Fix 5: Remove make_typed_entry, call make_entry directly
+        return Ok(make_entry(&tag, Value::String(hex_data.to_string())));
     }
 
     // Wine-specific: str(N):"..." — human-readable encoding for string types
@@ -420,9 +434,7 @@ fn make_entry(type_tag: &str, value: Value) -> Value {
     Value::Object(m)
 }
 
-fn make_typed_entry(type_tag: &str, value: Value) -> Value {
-    make_entry(type_tag, value)
-}
+// Fix 5: make_typed_entry removed — was a one-line wrapper around make_entry.
 
 /// Decode a hex string like `"68,00,65,00,6c,00,6c,00,6f,00,00,00"` as UTF-16LE.
 fn decode_utf16le_hex(hex: &str) -> Result<String> {
@@ -489,7 +501,14 @@ pub fn serialize(value: &Value) -> Result<String> {
         } else {
             section.as_str()
         };
-        let section_name_escaped = section_short.replace('\\', "\\\\");
+
+        // Fix 1: Wine format and REGEDIT4 use single backslashes in section headers;
+        // standard format (v5) uses double backslashes.
+        let section_name_escaped = if wine_format || header == "REGEDIT4" {
+            section_short.to_string()
+        } else {
+            section_short.replace('\\', "\\\\")
+        };
         let section_name = section_name_escaped.as_str();
 
         if section_val.is_null() {
@@ -549,7 +568,8 @@ pub fn serialize(value: &Value) -> Result<String> {
                 .with_context(|| format!("entry '{name}' missing 'value' field"))?;
 
             let name_part = quote_value_name(name);
-            let data_part = serialize_data(type_tag, val, name)
+            // Fix 3: Pass eol through to serialize_data for fold_hex
+            let data_part = serialize_data(type_tag, val, name, eol)
                 .with_context(|| format!("serialising entry '{name}'"))?;
 
             out.push_str(&name_part);
@@ -574,7 +594,8 @@ fn quote_value_name(name: &str) -> String {
     format!("\"{}\"", escape_reg_string(name))
 }
 
-fn serialize_data(type_tag: &str, val: &Value, name: &str) -> Result<String> {
+// Fix 3: serialize_data now takes eol parameter and passes it to fold_hex
+fn serialize_data(type_tag: &str, val: &Value, name: &str, eol: &str) -> Result<String> {
     match type_tag {
         "sz" => {
             let s = val
@@ -587,9 +608,10 @@ fn serialize_data(type_tag: &str, val: &Value, name: &str) -> Result<String> {
             let s = val
                 .as_str()
                 .with_context(|| format!("expand_sz value for '{name}' must be a string"))?;
-            // Encode as UTF-16LE hex
-            let hex = encode_utf16le_hex(s);
-            Ok(format!("hex(2):{}", fold_hex(&hex)))
+            // Fix 2: Add NUL terminator before encoding
+            let with_nul = format!("{s}\0");
+            let hex = encode_utf16le_hex(&with_nul);
+            Ok(format!("hex(2):{}", fold_hex(&hex, eol)))
         }
 
         "multi_sz" => {
@@ -606,7 +628,7 @@ fn serialize_data(type_tag: &str, val: &Value, name: &str) -> Result<String> {
             }
             combined.push('\0'); // double-NUL terminator
             let hex = encode_utf16le_hex(&combined);
-            Ok(format!("hex(7):{}", fold_hex(&hex)))
+            Ok(format!("hex(7):{}", fold_hex(&hex, eol)))
         }
 
         "dword" => {
@@ -622,7 +644,7 @@ fn serialize_data(type_tag: &str, val: &Value, name: &str) -> Result<String> {
         "qword" => {
             // Stored as raw hex string from parse, or as u64 integer
             match val {
-                Value::String(s) => Ok(format!("hex(b):{}", fold_hex(s))),
+                Value::String(s) => Ok(format!("hex(b):{}", fold_hex(s, eol))),
                 Value::Number(n) => {
                     let v = n
                         .as_u64()
@@ -633,7 +655,7 @@ fn serialize_data(type_tag: &str, val: &Value, name: &str) -> Result<String> {
                         .map(|b| format!("{b:02x}"))
                         .collect::<Vec<_>>()
                         .join(",");
-                    Ok(format!("hex(b):{}", fold_hex(&hex)))
+                    Ok(format!("hex(b):{}", fold_hex(&hex, eol)))
                 }
                 _ => bail!("qword value for '{name}' must be a string or number"),
             }
@@ -643,14 +665,14 @@ fn serialize_data(type_tag: &str, val: &Value, name: &str) -> Result<String> {
             let s = val
                 .as_str()
                 .with_context(|| format!("hex value for '{name}' must be a string"))?;
-            Ok(format!("hex:{}", fold_hex(s)))
+            Ok(format!("hex:{}", fold_hex(s, eol)))
         }
 
         other if other.starts_with("hex(") => {
             let s = val
                 .as_str()
                 .with_context(|| format!("{other} value for '{name}' must be a string"))?;
-            Ok(format!("{}:{}", other, fold_hex(s)))
+            Ok(format!("{}:{}", other, fold_hex(s, eol)))
         }
 
         other => bail!("unknown value type '{other}' for '{name}'"),
@@ -668,7 +690,8 @@ fn encode_utf16le_hex(s: &str) -> String {
 
 /// Fold a long hex string to 76-char line width (regedit style).
 /// Lines beyond the first are indented with two spaces.
-fn fold_hex(hex: &str) -> String {
+/// Fix 3: Takes eol parameter so Wine files use LF and standard files use CRLF.
+fn fold_hex(hex: &str, eol: &str) -> String {
     // Each byte is "xx," = 3 chars; 76 chars per line ≈ 25 bytes/line
     // We split on commas to avoid breaking a byte in the middle.
     if hex.is_empty() {
@@ -684,11 +707,11 @@ fn fold_hex(hex: &str) -> String {
     if lines.len() == 1 {
         return lines.remove(0);
     }
-    // Join with ",\\\r\n  " continuation
+    // Join with ",\<eol>  " continuation
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
-            out.push_str(",\\\r\n  ");
+            out.push_str(&format!(",\\{eol}  "));
         }
         out.push_str(line);
     }
@@ -887,12 +910,11 @@ mod tests {
              \"ExpandPath\"=hex(2):{hex}\r\n"
         );
         let v = parse(&reg).unwrap();
-        // The parsed value strips trailing NUL because decode_utf16le_hex leaves it in the string;
-        // we verify it at least contains the path.
+        // Fix 9: After Fix 2, trailing NUL is stripped; use precise equality check.
         let parsed_val = v["HKEY_CURRENT_USER\\Test"]["ExpandPath"]["value"]
             .as_str()
             .unwrap();
-        assert!(parsed_val.contains(s), "got: {parsed_val:?}");
+        assert_eq!(parsed_val, s, "expand_sz value mismatch");
     }
 
     #[test]
@@ -960,8 +982,8 @@ mod tests {
         let hex_str = reparsed["HKEY_CURRENT_USER\\Test"]["Big"]["value"]
             .as_str()
             .unwrap();
-        // LE bytes of 0x0102030405060708
-        assert!(hex_str.contains("08"), "LE byte check: {hex_str}");
+        // Fix 10: Precise assertion for LE bytes of 0x0102030405060708
+        assert_eq!(hex_str, "08,07,06,05,04,03,02,01", "qword LE bytes mismatch");
     }
 
     #[test]
@@ -1029,8 +1051,9 @@ mod tests {
                    [HKCU\\B]\r\n\
                    \"y\"=dword:00000002\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\A"]["x"], make_sz("1"));
-        assert_eq!(v["HKCU\\B"]["y"], make_dword(2));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\A"]["x"], make_sz("1"));
+        assert_eq!(v["HKEY_CURRENT_USER\\B"]["y"], make_dword(2));
     }
 
     #[test]
@@ -1041,9 +1064,10 @@ mod tests {
                    \"b\"=dword:0000000a\r\n\
                    \"c\"=hex:de,ad,be,ef\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["a"], make_sz("alpha"));
-        assert_eq!(v["HKCU\\Test"]["b"], make_dword(10));
-        assert_eq!(v["HKCU\\Test"]["c"], make_hex("de,ad,be,ef"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["a"], make_sz("alpha"));
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["b"], make_dword(10));
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["c"], make_hex("de,ad,be,ef"));
     }
 
     // ── line continuation ─────────────────────────────────────────────────────
@@ -1054,7 +1078,8 @@ mod tests {
                    [HKCU\\Test]\r\n\
                    \"Long\"=hex:01,02,03,\\\r\n  04,05,06\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["Long"], make_hex("01,02,03,04,05,06"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["Long"], make_hex("01,02,03,04,05,06"));
     }
 
     // ── comments ──────────────────────────────────────────────────────────────
@@ -1068,7 +1093,8 @@ mod tests {
                    ; another comment\r\n\
                    \"val\"=\"ok\"\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["val"], make_sz("ok"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["val"], make_sz("ok"));
     }
 
     // ── BOM ───────────────────────────────────────────────────────────────────
@@ -1079,7 +1105,8 @@ mod tests {
                    [HKCU\\Test]\r\n\
                    \"x\"=\"1\"\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["x"], make_sz("1"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["x"], make_sz("1"));
     }
 
     // ── round-trips ───────────────────────────────────────────────────────────
@@ -1343,6 +1370,88 @@ mod tests {
         );
     }
 
+    // Fix 11: Wine short-path normalization tests
+    #[test]
+    fn wine_short_path_normalized_on_parse() {
+        // Real user.reg uses [Software\Wine] without HKEY_CURRENT_USER\ prefix.
+        // normalize_section_key must expand it so patch keys (full form) match.
+        let reg = "WINE REGISTRY Version 2\n\n\
+                   [Software\\\\Wine]\n\
+                   \"UseGLSL\"=\"enabled\"\n";
+        let v = parse(reg).unwrap();
+        // key must be stored under the full path
+        assert_eq!(v["HKEY_CURRENT_USER\\Software\\Wine"]["UseGLSL"], make_sz("enabled"),
+            "Wine short-path was not normalized to full HKEY_CURRENT_USER\\ prefix");
+    }
+
+    #[test]
+    fn wine_short_path_round_trips() {
+        let reg = "WINE REGISTRY Version 2\n\n\
+                   [Software\\\\Wine\\\\Direct3D]\n\
+                   \"UseGLSL\"=\"enabled\"\n\
+                   \"VideoMemorySize\"=dword:00000200\n";
+        let v = parse(reg).unwrap();
+        let s = serialize(&v).unwrap();
+        // Wine output must use the short path (no HKEY_CURRENT_USER\ prefix)
+        assert!(s.contains("[Software\\Wine\\Direct3D]"),
+            "Wine serialize must emit short paths without HKEY_CURRENT_USER: {s}");
+        assert!(!s.contains("HKEY_CURRENT_USER"), "full prefix must not appear in Wine output: {s}");
+        // And must be parseable again
+        let reparsed = parse(&s).unwrap();
+        assert_eq!(reparsed["HKEY_CURRENT_USER\\Software\\Wine\\Direct3D"]["UseGLSL"],
+            make_sz("enabled"));
+    }
+
+    // Fix 12: str(N) Wine format tests
+    #[test]
+    fn wine_str1_plain_string() {
+        // str(1):"..." is Wine's human-readable REG_SZ
+        let reg = "WINE REGISTRY Version 2\n\n\
+                   [Software\\\\Test]\n\
+                   \"Plain\"=str(1):\"hello world\"\n";
+        let v = parse(reg).unwrap();
+        assert_eq!(v["HKEY_CURRENT_USER\\Software\\Test"]["Plain"]["type"], "sz");
+        assert_eq!(v["HKEY_CURRENT_USER\\Software\\Test"]["Plain"]["value"], "hello world");
+    }
+
+    #[test]
+    fn wine_str2_expand_sz() {
+        // str(2):"..." is Wine's human-readable REG_EXPAND_SZ
+        let reg = "WINE REGISTRY Version 2\n\n\
+                   [Software\\\\Test]\n\
+                   \"Path\"=str(2):\"%SystemRoot%\\\\system32\"\n";
+        let v = parse(reg).unwrap();
+        assert_eq!(v["HKEY_CURRENT_USER\\Software\\Test"]["Path"]["type"], "expand_sz");
+        assert_eq!(v["HKEY_CURRENT_USER\\Software\\Test"]["Path"]["value"],
+            "%SystemRoot%\\system32");
+    }
+
+    #[test]
+    fn wine_str7_multi_sz() {
+        // str(7):"..." is Wine's human-readable REG_MULTI_SZ; NUL separates strings
+        let reg = "WINE REGISTRY Version 2\n\n\
+                   [Software\\\\Test]\n\
+                   \"Fonts\"=str(7):\"Arial\\0Times New Roman\\0\"\n";
+        let v = parse(reg).unwrap();
+        assert_eq!(v["HKEY_CURRENT_USER\\Software\\Test"]["Fonts"]["type"], "multi_sz");
+        let parts = v["HKEY_CURRENT_USER\\Software\\Test"]["Fonts"]["value"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "Arial");
+        assert_eq!(parts[1], "Times New Roman");
+    }
+
+    // Fix 13: hex(b): QWORD alternate form test
+    #[test]
+    fn parses_qword_hex_b_form() {
+        // hex(b): is an alternate representation for QWORD (same as qword: but as raw hex)
+        let reg = "Windows Registry Editor Version 5.00\r\n\r\n\
+                   [HKCU\\Test]\r\n\
+                   \"Q\"=hex(b):08,07,06,05,04,03,02,01\r\n";
+        let v = parse(reg).unwrap();
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["Q"]["type"], "qword");
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["Q"]["value"], "08,07,06,05,04,03,02,01");
+    }
+
     // ── error cases ───────────────────────────────────────────────────────────
 
     #[test]
@@ -1361,7 +1470,8 @@ mod tests {
                    [HKCU\\Test]\r\n\
                    \"Good\"=hex:01,ab,ff\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["Good"], make_hex("01,ab,ff"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["Good"], make_hex("01,ab,ff"));
     }
 
     #[test]
@@ -1411,7 +1521,8 @@ mod tests {
         let s = serialize(&v).unwrap();
         assert!(s.contains("[HKCU\\\\Empty]"), "got: {s}");
         let reparsed = parse(&s).unwrap();
-        assert_eq!(reparsed["HKCU\\Empty"], json!({}));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER on parse
+        assert_eq!(reparsed["HKEY_CURRENT_USER\\Empty"], json!({}));
     }
 
     #[test]
@@ -1423,7 +1534,8 @@ mod tests {
         });
         let s = serialize(&v).unwrap();
         let reparsed = parse(&s).unwrap();
-        assert_eq!(reparsed["HKCU\\Test"]["My Value\\Path"], make_sz("test"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER on parse
+        assert_eq!(reparsed["HKEY_CURRENT_USER\\Test"]["My Value\\Path"], make_sz("test"));
     }
 
     #[test]
@@ -1435,7 +1547,8 @@ mod tests {
         });
         let s = serialize(&v).unwrap();
         let reparsed = parse(&s).unwrap();
-        assert_eq!(reparsed["HKCU\\Test"]["Unicode"], make_sz("日本語テスト"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER on parse
+        assert_eq!(reparsed["HKEY_CURRENT_USER\\Test"]["Unicode"], make_sz("日本語テスト"));
     }
 
     #[test]
@@ -1443,7 +1556,8 @@ mod tests {
         // Some tools write \n instead of \r\n; we should handle both
         let reg = "Windows Registry Editor Version 5.00\n\n[HKCU\\Test]\n\"x\"=\"ok\"\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["x"], make_sz("ok"));
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["x"], make_sz("ok"));
     }
 
     #[test]
@@ -1453,11 +1567,12 @@ mod tests {
                    [HKCU\\Test]\r\n\
                    \"Custom\"=hex(3):01,02\r\n";
         let v = parse(reg).unwrap();
-        assert_eq!(v["HKCU\\Test"]["Custom"]["type"], "hex(3)");
-        assert_eq!(v["HKCU\\Test"]["Custom"]["value"], "01,02");
+        // Fix 4: HKCU is now expanded to HKEY_CURRENT_USER
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["Custom"]["type"], "hex(3)");
+        assert_eq!(v["HKEY_CURRENT_USER\\Test"]["Custom"]["value"], "01,02");
         // Round-trip
         let s = serialize(&v).unwrap();
         let reparsed = parse(&s).unwrap();
-        assert_eq!(reparsed["HKCU\\Test"]["Custom"]["type"], "hex(3)");
+        assert_eq!(reparsed["HKEY_CURRENT_USER\\Test"]["Custom"]["type"], "hex(3)");
     }
 }
