@@ -7,7 +7,7 @@
   rustfmt,
 }:
 mkShell {
-  buildInputs = [
+  packages = [
     cargo
     rustc
     rust-analyzer

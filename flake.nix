@@ -20,6 +20,14 @@
 
     nixosModules.default = import ./nix/module.nix;
 
+    overlays.default = final: _prev: {
+      patchix = self.packages.${final.system}.patchix;
+    };
+
+    checks = forEachSystem (system: {
+      patchix = self.packages.${system}.patchix;
+    });
+
     devShells = forEachSystem (system: {
       default = pkgsForEach.${system}.callPackage ./nix/shell.nix {};
     });
