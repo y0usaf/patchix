@@ -16,12 +16,20 @@ pub struct MergeConfig {
     pub clobber: bool,
 }
 
+impl Default for MergeConfig {
+    fn default() -> Self {
+        MergeConfig {
+            default_array: ArrayStrategy::Replace,
+            path_strategies: HashMap::new(),
+            clobber: true,
+        }
+    }
+}
+
 impl MergeConfig {
     fn array_strategy_for(&self, path: &str) -> &ArrayStrategy {
-        // Try exact match first, then strip leading dot
-        let normalized = path.strip_prefix('.').unwrap_or(path);
         self.path_strategies
-            .get(normalized)
+            .get(path)
             .unwrap_or(&self.default_array)
     }
 }
@@ -40,7 +48,7 @@ pub fn merge(existing: Value, patch: Value, config: &MergeConfig, path: &str) ->
                 };
 
                 if patch_val.is_null() {
-                    // RFC 7386: null in patch means delete the key (only when clobber is enabled)
+                    // RFC 7396: null in patch means delete the key (only when clobber is enabled)
                     if config.clobber {
                         base.remove(&key);
                     }
@@ -121,11 +129,7 @@ mod tests {
     use serde_json::json;
 
     fn default_config() -> MergeConfig {
-        MergeConfig {
-            default_array: ArrayStrategy::Replace,
-            path_strategies: HashMap::new(),
-            clobber: true,
-        }
+        MergeConfig::default()
     }
 
     #[test]
@@ -275,11 +279,23 @@ mod tests {
     }
 
     fn no_clobber_config() -> MergeConfig {
-        MergeConfig {
-            default_array: ArrayStrategy::Replace,
-            path_strategies: HashMap::new(),
+        MergeConfig { clobber: false, ..MergeConfig::default() }
+    }
+
+    #[test]
+    fn no_clobber_ignores_per_path_array_strategy() {
+        // Under no-clobber, the existing array is preserved regardless of any
+        // per-path strategy — the strategy is only meaningful when clobber=true.
+        let existing = json!({"plugins": ["a", "b"]});
+        let patch = json!({"plugins": ["c"]});
+        let config = MergeConfig {
+            path_strategies: HashMap::from([("plugins".to_string(), ArrayStrategy::Append)]),
             clobber: false,
-        }
+            ..MergeConfig::default()
+        };
+        let result = merge(existing, patch, &config, "");
+        // Array preserved; append strategy not applied
+        assert_eq!(result, json!({"plugins": ["a", "b"]}));
     }
 
     #[test]
